@@ -5,19 +5,21 @@
     reduced 能量法把负荷母线消去(Kron 约简), SPM 保留网络节点为代数节点。MATLAB 平台的 SPM 用
     **恒阻抗负荷**(并入 Yfull_mod, Sload 的 P/Q=0), 网络母线满足 P=Q=0 的代数约束, 势能含网络电压项。
 
-本模块(逐块对 MATLAB 交叉验证, 均已通过):
+本模块的底层公式曾做过分块 MATLAB 对照；当前报告只把这些结果作为带限制的历史证据：
     - solve_spm_network: 给定发电机内角, 解网络母线角/电压(恒阻抗, P=Q=0)。对 SEP 网络态 9e-15。
     - spm_generator_power: 发电机经完整网络(Yfull_mod)注入的电磁功率。SEP 处 COI 功率失配 1.9e-11。
     - spm_potential_energy: 5 项 SPM 势能(Ep1 磁势能 / Ep2 电纳 / Ep3 电导 / Ep4 网损 / Ep5 负荷)。
-      用 MATLAB 的 CUEP 网络态得 E_crit=3.3757, 对 MATLAB 误差 0。
-    - spm_fault_energy_cct: 沿故障轨迹逐点算 Ek+Ep, 首次越过临界能量即 LEA CCT。给定 E_crit=3.3757
-      时精确复现 MATLAB 的 CCT=0.2053。
+      MATLAB 曾输出 E_crit=3.3757，但其 CUEP 网络角与 raw fsolve 角存在混合坐标，当前不作为
+      物理一致性证据。
+    - spm_fault_energy_cct: 沿实际 fault-network DAE 轨迹逐点算 Ek+Ep，首次越过临界能量即 LEA CCT；
+      旧的 E_crit=3.3757 -> 0.2053 仅是历史代理流程，不代表当前严格 DAE 结果。
 
 ⚠️ 未自足闭环(明确的下一里程碑): 独立求 SPM CUEP 网络态需选对物理分支——SPM 网络方程在 CUEP
 发电机角处有 11+ 个解, MATLAB 靠 MGP(Fun_Cal_MGP_SPM/AEiteration_SPM)沿物理轨迹连续跟踪播种。
 这是与 v1 find_mgp 同源的数值分支难题, 尚未移植稳健的 SPM 版 controlling-UEP。因此 energy CCT 目前
-需外部传入 E_critical(如 3.3757)。物理约束: 正确的 E_crit 须 < 故障能量峰值(本例 5.568), 否则能量
-法给不出有限 CCT。
+需外部传入 E_critical(如 3.3757)。物理约束: 正确的 E_crit 须 < 故障能量峰值；当前严格
+fault-network DAE 轨迹在默认案例上的峰值约为 4.82202，旧的 5.568/6.46886 仅是历史代理值；
+若临界能量不低于该峰值，能量法就给不出有限 CCT。
 
 单位: 角度 rad, 功率/导纳 pu。发电机在前 ngen 节点, 网络在后。依赖 scipy。
 """
@@ -166,56 +168,125 @@ def epu_of(preset) -> np.ndarray:
 
 # ------------------------- SPM 能量法 CCT -------------------------
 
+def _expand_fault_network_state(z_fault: np.ndarray, fault, postfault,
+                                ngen: int) -> tuple[np.ndarray, np.ndarray]:
+    """Map a fault-network algebraic state into the postfault bus ordering.
+
+    The MATLAB SPM trajectory keeps a zero placeholder for the removed fault
+    bus.  Python's physical fault solve omits that bus, so the mapping is done
+    by recorded bus numbers rather than a hard-coded column index.
+    """
+    z_fault = np.asarray(z_fault, dtype=float).reshape(-1)
+    n_fault = int(z_fault.size // 2)
+    theta_fault = z_fault[:n_fault]
+    voltage_fault = z_fault[n_fault:]
+    fault_transform = np.asarray(fault.metadata["transform"], dtype=int)[ngen:]
+    post_transform = np.asarray(postfault.metadata["transform"], dtype=int)[ngen:]
+    if fault_transform.size != n_fault:
+        raise ValueError("fault algebraic state width does not match fault transform")
+    theta_post = np.zeros(post_transform.size, dtype=float)
+    voltage_post = np.zeros(post_transform.size, dtype=float)
+    for k, bus in enumerate(fault_transform):
+        matches = np.flatnonzero(post_transform == int(bus))
+        if matches.size != 1:
+            raise ValueError(f"fault bus {int(bus)} is missing or duplicated in postfault transform")
+        j = int(matches[0])
+        theta_post[j] = theta_fault[k]
+        voltage_post[j] = voltage_fault[k]
+    return theta_post, voltage_post
+
+
+def spm_fault_energy_series(static, *, tfault: float = 0.6,
+                            tunit: float = 1e-4, method: str = "Radau",
+                            max_points: int | None = None) -> tuple[np.ndarray, np.ndarray, bool]:
+    """Compute total SPM energy on the actual fault-network DAE trajectory.
+
+    The differential trajectory and algebraic states both come from
+    :func:`bcu_v2.spm_dae.simulate_spm_dae`.  The postfault network and SEP are
+    used only as the potential-energy reference, matching the MATLAB energy
+    functional.  A false return flag means that no complete finite series is
+    available; callers must not replace it with a reduced-model result.
+    """
+    if tfault <= 0 or tunit <= 0:
+        raise ValueError("tfault and tunit must be positive")
+    from .spm_dae import simulate_spm_dae
+
+    preset, base = static.preset, static.basevalue
+    fault, postfault = static.fault, static.postfault
+    ypost = _yfull_mod(postfault)
+    epu = np.asarray(preset.epu, dtype=float)
+    ngen = int(preset.ngen)
+    nnet = int(ypost.shape[0]) - ngen
+    sep_gen = np.asarray(postfault.sep_delta, dtype=float)
+    sep_state, sep_ok, _ = solve_spm_network(sep_gen, ypost, epu)
+    if not sep_ok:
+        return np.array([], dtype=float), np.array([], dtype=float), False
+    sep_nt, sep_nv = sep_state[:nnet], sep_state[nnet:]
+    delta0 = np.asarray(static.prefault.sep_delta, dtype=float)
+    omega0 = np.full(ngen, float(static.prefault.sep_omegapu) * base.omega_b)
+    trajectory = simulate_spm_dae(tfault, tunit, fault, preset, base,
+                                  delta0, omega0, method=method)
+    if not trajectory.get("success", False):
+        return np.asarray(trajectory.get("time", []), dtype=float), \
+            np.full(len(trajectory.get("time", [])), np.nan), False
+
+    times = np.asarray(trajectory["time"], dtype=float)
+    count = times.size
+    if max_points is not None:
+        if max_points <= 0:
+            raise ValueError("max_points must be positive when provided")
+        indices = np.linspace(0, max(count - 1, 0), min(max_points, count)).astype(int)
+        indices = np.unique(indices)
+    else:
+        indices = np.arange(count, dtype=int)
+    energies = np.full(indices.size, np.nan, dtype=float)
+    m = np.asarray(preset.m, dtype=float)
+    for out_index, k in enumerate(indices):
+        dg = np.asarray(trajectory["delta"][k], dtype=float)
+        omega = np.asarray(trajectory["omega"][k], dtype=float)
+        z_fault = np.asarray(trajectory["algebraic"][k], dtype=float)
+        if not (np.all(np.isfinite(dg)) and np.all(np.isfinite(omega))
+                and np.all(np.isfinite(z_fault))):
+            continue
+        theta_net, voltage_net = _expand_fault_network_state(
+            z_fault, fault, postfault, ngen
+        )
+        if not (np.all(np.isfinite(theta_net)) and np.all(np.isfinite(voltage_net))):
+            continue
+        omega_coi = omega - np.dot(m, omega) / np.sum(m)
+        ep = spm_potential_energy(
+            preset, postfault, ypost, sep_gen, sep_nt, sep_nv,
+            dg, theta_net, voltage_net,
+        )
+        energies[out_index] = float(np.sum(ep) + 0.5 * np.sum(m * omega_coi ** 2))
+    return times[indices], energies, bool(energies.size and np.all(np.isfinite(energies)))
+
 def spm_fault_energy_cct(static, e_critical: float, tfault: float = 0.6,
                          tunit: float = 1e-4) -> Tuple[float, bool]:
-    """SPM 能量法 CCT: 沿故障轨迹逐点算 Ek+Ep(postfault 势能), 首次越 e_critical 即 CCT。
+    """SPM 能量法 CCT: 沿 fault-network DAE 逐点算 Ek+Ep, 首次越界即 CCT。
 
     使用方法:
-        传入 v1 StaticResult 与临界能量 e_critical(SPM 势能意义, 如与 MATLAB 交叉验证得 3.3757),
-        返回 (CCT[s], 是否找到)。给定 e_critical=3.3757 时对 MATLAB 的 0.2053 精确复现。
-    机理(复现 Fun_Cal_CCT_Energy_SPM):
-        (1) 发电机角轨迹用 reduced 故障积分(Kron 约简对恒阻抗负荷精确, 故 SPM 发电机角=reduced);
-        (2) 每步在 **postfault 网络** 上解网络代数(warm-start, 分支连续)得网络角/电压;
+        传入 v1 StaticResult 与临界能量 e_critical(SPM 势能意义), 返回 (CCT[s], 是否找到)。
+        历史 MATLAB 代理值不再被视为当前严格 DAE 的验收基准。
+    机理(保留 MATLAB 势能泛函):
+        (1) fault-only SPM DAE 同时推进发电机状态并连续校正故障网络代数状态;
+        (2) 将删去的故障母线按记录的母线号映射为零占位，再用 postfault 网络计算势能;
         (3) Ek=0.5 Σ m ωc², Ep=spm_potential_energy(SEP->当前), 首次 Ek+Ep>e_critical 的时刻即 CCT。
-    诚实说明: e_critical 需外部提供(自足求 CUEP 网络态的分支选择尚未闭环, 见模块头部)。
+    诚实说明: e_critical 仍需调用者提供；自足 CUEP 由 ``spm_cuep`` 负责计算。
     """
-
-    from bcu_3m9b.dynamics import integrate_reduced
-
-    preset, base, post, fault = static.preset, static.basevalue, static.postfault, static.fault
-    ypost = _yfull_mod(post)
-    epu = np.asarray(preset.epu, dtype=float)
-    m = np.asarray(preset.m, dtype=float)
-    ngen = int(m.size)
-    nnet = int(ypost.shape[0]) - ngen
-
-    # SEP 参考网络态.
-    xsep, ok, _ = solve_spm_network(np.asarray(post.sep_delta, dtype=float), ypost, epu)
-    sep_gen = np.asarray(post.sep_delta, dtype=float)
-    sep_nt, sep_nv = xsep[:nnet], xsep[nnet:]
-
-    # 故障网络母线号 -> postfault 网络索引(能量在 postfault 全维度上算, 故障母线补 0).
-    faultbus = int(preset.fault_line[preset.fault_position])
-    post_net = [b for b in np.asarray(post.metadata["transform"]).astype(int) if b > ngen]
-    fpos = post_net.index(faultbus)
-    yfault = _yfull_mod(fault)
-    nnet_f = int(yfault.shape[0]) - ngen
-
-    d0 = np.asarray(static.prefault.sep_delta, dtype=float)
-    w0 = np.full(ngen, static.prefault.sep_omegapu * base.omega_b)
-    traj = integrate_reduced(tfault, tunit, fault, preset, base, d0, w0)
-
-    guess = xsep.copy()
-    e_prev = None
-    for k in range(traj.time.size):
-        thc = traj.thetac[k]
-        x, _, _ = solve_spm_network(thc, ypost, epu, guess=guess)
-        guess = x
-        nt, nv = x[:nnet], x[nnet:]
-        ek = 0.5 * float(np.sum(m * traj.omegac[k] ** 2))
-        ep = float(np.sum(spm_potential_energy(preset, post, ypost, sep_gen, sep_nt, sep_nv, thc, nt, nv)))
-        esum = ek + ep
-        if e_prev is not None and e_prev < e_critical < esum:
-            return float((k - 1) * tunit), True
-        e_prev = esum
-    return float(traj.time[-1]), False
+    if not np.isfinite(e_critical):
+        return float("nan"), False
+    times, energies, valid = spm_fault_energy_series(
+        static, tfault=tfault, tunit=tunit, method="Radau", max_points=None,
+    )
+    if not valid or times.size == 0:
+        return float("nan"), False
+    previous = float(energies[0])
+    if previous >= e_critical:
+        return float(times[0]), True
+    for k in range(1, times.size):
+        current = float(energies[k])
+        if previous < e_critical <= current:
+            return float(times[k - 1]), True
+        previous = current
+    return float(times[-1]), False

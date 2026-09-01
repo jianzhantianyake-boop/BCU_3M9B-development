@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -21,6 +22,7 @@ from bcu_v2.spm_cuep import (
     trace_spm_mgp,
 )
 from bcu_v2.spm_energy import solve_spm_network
+from bcu_v2.spm_cuep import estimate_spm_fault_energy_peak
 
 
 class SpmCuepTests(unittest.TestCase):
@@ -64,6 +66,15 @@ class SpmCuepTests(unittest.TestCase):
         )
         self.assertFalse(converged)
         self.assertLess(residual, 1e-8)
+
+    def test_fault_energy_peak_uses_spm_dae_trajectory(self):
+        """SPM energy must not silently fall back to the reduced trajectory."""
+        with patch("bcu_3m9b.dynamics.integrate_reduced",
+                   side_effect=AssertionError("reduced trajectory is not SPM evidence")):
+            peak = estimate_spm_fault_energy_peak(
+                self.static, tfault=0.05, tunit=0.005, max_points=16,
+            )
+        self.assertTrue(np.isfinite(peak))
 
 
 if __name__ == "__main__":

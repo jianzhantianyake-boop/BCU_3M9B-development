@@ -190,32 +190,14 @@ def _candidate_delta(static, mgp: Optional[SpmMgpResult]) -> tuple[Optional[np.n
 
 def estimate_spm_fault_energy_peak(static, *, tfault: float = 0.6,
                                    tunit: float = 1e-3, max_points: int = 256) -> float:
-    """估计故障轨迹上的最大 SPM 总能量，供 ``E_critical`` 物理门禁使用。"""
+    """估计实际 SPM fault-network DAE 轨迹上的最大总能量。"""
 
-    from bcu_3m9b.dynamics import integrate_reduced
-
-    preset, post, yfull, epu, ngen, nnet = _context(static)
-    sep = _project_coi(np.asarray(post.sep_delta, dtype=float), preset.m)
-    sep_net, ok, _ = spm_energy.solve_spm_network(sep, yfull, epu)
-    if not ok:
+    _, energies, valid = spm_energy.spm_fault_energy_series(
+        static, tfault=tfault, tunit=tunit, method="Radau", max_points=max_points,
+    )
+    if not valid or energies.size == 0:
         return float("nan")
-    d0 = np.asarray(static.prefault.sep_delta, dtype=float)
-    w0 = np.full(ngen, float(static.prefault.sep_omegapu) * static.basevalue.omega_b)
-    traj = integrate_reduced(tfault, tunit, static.fault, preset, static.basevalue, d0, w0)
-    indices = np.linspace(0, traj.time.size - 1, min(max_points, traj.time.size)).astype(int)
-    guess = sep_net.copy()
-    peak = -np.inf
-    for k in indices:
-        x, ok, _ = spm_energy.solve_spm_network(traj.thetac[k], yfull, epu, guess=guess)
-        if not ok:
-            continue
-        guess = x
-        ep = np.sum(spm_energy.spm_potential_energy(
-            preset, post, yfull, sep, sep_net[:nnet], sep_net[nnet:],
-            traj.thetac[k], x[:nnet], x[nnet:]))
-        ek = 0.5 * float(np.sum(np.asarray(preset.m) * traj.omegac[k] ** 2))
-        peak = max(peak, float(ep + ek))
-    return float(peak) if np.isfinite(peak) else float("nan")
+    return float(np.max(energies))
 
 
 def solve_spm_cuep(static, mgp: Optional[SpmMgpResult] = None, *,
