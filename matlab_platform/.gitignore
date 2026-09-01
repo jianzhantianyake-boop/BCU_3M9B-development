@@ -1,0 +1,18 @@
+# ===== 第三方依赖（体积大 + Windows 超长路径，作为外部依赖不纳入版本控制）=====
+# MATPOWER 7.1 需本地放置于 C1_Matpower/matpower7.1（见 WORKLOG.md / 操作指南）
+C1_Matpower/
+
+# ===== 运行产物 =====
+results/
+*.asv
+*.slxc
+slprj/
+**/slprj/
+
+# ===== 验证基准（大二进制，可由 verify/v0_baseline.m 重新生成）=====
+verify/*.mat
+
+# ===== 系统 / 编辑器 =====
+.DS_Store
+Thumbs.db
+*.tmp

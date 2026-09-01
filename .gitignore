@@ -1,0 +1,22 @@
+# Third-party and local-only dependencies
+C1_Matpower/
+**/C1_Matpower/
+
+# Runtime outputs and generated artefacts
+**/results/
+**/figures/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+*.mat
+*.asv
+slprj/
+*.tmp
+validation/reports/
+experiments/results/
+
+# Local environment files
+.venv/
+venv/
+.env
+

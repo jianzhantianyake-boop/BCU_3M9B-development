@@ -1,0 +1,49 @@
+# =============================================================================
+# BCU v1 平台 · 集中配置文件(唯一需要编辑的参数入口)
+#
+# 【怎么用】
+#   1) 只改下面 key: value 右边的值, 保存.
+#   2) 命令行运行:  python cli.py run          (用本文件的配置跑 mode)
+#      或临时覆盖:  python cli.py run --mode reduced_region --grid 15
+#   3) 看配置摘要:  python cli.py show
+#   4) 列可选项:    python cli.py list
+#   5) 验证:        python cli.py validate     (潮流/SEP 残差 + 能量法 LEA<=REA)
+#
+# 另有交互菜单入口:  python main.py            (8 模式菜单, 探索用)
+# 单位: 角度 rad, 角速度 rad/s, 时间 s, 功率/电压/导纳 pu, 频率 Hz.
+# 注: v1 只含 3 机 9 母线经典模型(case9_v2); 39 母线/更多模型在 v2.
+# =============================================================================
+
+# ---------- 实验模式(对应 8 个 mode) ----------
+# reduced_cct / reduced_numerical / reduced_region /
+# spm_cct / spm_numerical / spm_region /
+# two_machine_region_3d / two_machine_region_3d_gfl
+mode: reduced_cct
+
+# ---------- 系统 / 案例 ----------
+case: case9_v2        # v1 仅支持 case9_v2(3机9母线)
+f_base: 60            # 系统基频 Hz
+
+# ---------- 发电机参数(长度必须 == 3) ----------
+m:             [0.1254, 0.034, 0.016]     # 惯性 m = 2H/ωs
+damping_ratio: [0.1,    0.1,   0.1]       # 阻尼比 d/m; 实际 d = m*damping_ratio
+Pm:            [0.898,  1.3432, 0.9419]   # 机械功率 (pu)
+xd1:           [0.0608, 0.1198, 0.1813]   # 暂态电抗 Xd' (pu)
+E:             [1.1083, 1.1071, 1.0606]   # 内电势幅值 (pu)
+
+# ---------- 故障设置 ----------
+faultline: [9, 6]     # 故障支路 [FromBus, ToBus]
+faultposition: 0      # 0 取 faultline[0], 1 取 faultline[1]
+
+# ---------- 数值 / 求解器 ----------
+path_energy_cal: 0    # 路径势能: 0=Ray近似, 正整数N=N段梯形, -1=忽略
+Tfault: 0.3           # 故障轨迹时长 (s)
+Tunit: 0.001          # 积分步长 (s)
+postfault_time: 2.0   # 故障后仿真时长 (s)
+cct_samples: 21       # 时域 CCT 网格点数
+region_grid: 21       # reduced_region 网格密度(每维点数)
+spm_region_grid: 15   # spm_region 网格密度(每维点数, 较慢)
+
+# ---------- 输出 ----------
+run_selfcheck: true   # reduced_cct/numerical 跑完做 SEP 残差 + LEA<=REA 自检
+save_snapshot: true   # 存配置快照到 results/(可追溯)

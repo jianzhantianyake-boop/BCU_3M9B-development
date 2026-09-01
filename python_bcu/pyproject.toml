@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bcu-3m9b-python"
+version = "0.1.0"
+description = "BCU、能量函数与暂态稳定的中文 NumPy 教学仿真平台"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[tool.setuptools]
+packages = ["bcu_3m9b"]

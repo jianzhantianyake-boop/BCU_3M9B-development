@@ -1,0 +1,19 @@
+{
+  // MATLAB 扩展连接配置（MathWorks.language-matlab）
+  // installPath 指向本机 MATLAB 安装根目录，扩展据此启动后台 MATLAB 内核。
+  "matlab.installPath": "C:\\Program Files\\MATLAB\\R2024a",
+
+  // onStart: 打开 .m 文件时即连接 MATLAB，可直接用 Run / 逐节运行 / 断点调试。
+  // 若不想每次自动占用 MATLAB 许可，可改为 "onDemand"。
+  "matlab.matlabConnectionTiming": "onStart",
+
+  // 开启代码诊断（语法/未定义变量等静态检查），有助于第 0 层静态审查。
+  "matlab.signHelp": true,
+  "matlab.linting.enabled": true,
+
+  "files.associations": {
+    "*.m": "matlab"
+  },
+  // 避免保存时自动改写研究代码格式，保持与原始实现逐字节可比。
+  "editor.formatOnSave": false
+}

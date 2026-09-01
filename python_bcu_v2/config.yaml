@@ -1,0 +1,50 @@
+# =============================================================================
+# BCU v2 仿真平台 · 集中配置文件(唯一需要编辑的参数入口)
+#
+# 【怎么用】
+#   1) 只改下面 key: value 右边的值, 保存.
+#   2) 命令行运行:  python cli.py run          (用本文件的配置跑 mode)
+#      或临时覆盖:  python cli.py run --case case39_modified --mode reduced_region
+#   3) 看配置摘要:  python cli.py show
+#   4) 列可选项:    python cli.py list
+#   5) 验证:        python cli.py validate     (P0 物理不变量+金标准)
+#                   python cli.py xval         (T3 与 MATLAB 交叉验证)
+#
+# 单位: 角度 rad, 角速度 rad/s, 时间 s, 功率/电压/导纳 pu, 频率 Hz.
+# =============================================================================
+
+# ---------- ① 实验模式(对应 8 个 mode) ----------
+# reduced_cct / reduced_numerical / reduced_region /
+# spm_cct / spm_numerical / spm_region /
+# two_machine_region_3d / two_machine_region_3d_gfl
+mode: reduced_cct
+
+# ---------- ② 系统 / 案例 ----------
+case: case9_v2        # case9_v2(3机9母线) 或 case39_modified(10机39母线)
+f_base: 60            # 系统基频 Hz(9母线用60, 39母线用50)
+
+# ---------- ③ 发电机参数(长度必须 == 发电机台数) ----------
+# 切到 39 母线: 把 case 改成 case39_modified, 并令 auto_params: true(用内置示例动态参数),
+# 或把下面 5 个数组整组替换为 10 台机的值.
+auto_params: false    # true 时忽略下面数组, 用案例内置动态参数(9母线=v1默认, 39母线=示例)
+m:             [0.1254, 0.034, 0.016]     # 惯性 m = 2H/ωs
+damping_ratio: [0.1,    0.1,   0.1]       # 阻尼比 d/m; 实际 d = m*damping_ratio
+Pm:            [0.898,  1.3432, 0.9419]   # 机械功率 (pu)
+xd1:           [0.0608, 0.1198, 0.1813]   # 暂态电抗 Xd' (pu)
+E:             [1.1083, 1.1071, 1.0606]   # 内电势幅值 (pu)
+
+# ---------- ④ 故障设置 ----------
+faultline: [9, 6]     # 故障支路 [FromBus, ToBus], 必须是 case 中存在的支路
+faultposition: 0      # 0 取 faultline[0], 1 取 faultline[1]
+
+# ---------- ⑤ 数值 / 求解器 ----------
+path_energy_cal: 0    # 路径势能: 0=Ray近似, 正整数N=N段梯形, -1=忽略
+Tfault: 0.3           # 故障轨迹时长 (s), 需 > 预计 CCT
+Tunit: 0.001          # 积分步长 (s)
+postfault_time: 2.0   # 故障后仿真时长 (s)
+cct_samples: 21       # 时域 CCT 网格点数
+region_grid: 21       # 稳定域网格密度(每维点数)
+
+# ---------- ⑥ 输出 ----------
+run_selfcheck: true   # reduced_cct 跑完做 SEP/CUEP 残差 + LEA<=REA 自检
+save_snapshot: true   # 存配置快照到 results/(可追溯)
