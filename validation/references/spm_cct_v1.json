@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0",
+  "status": "BLOCKED",
+  "reason": "本轮 MATLAB 未启动，尚未导出紧凑参考；SPM 自足 CUEP 尚未验收",
+  "metadata": {"case": "case9_v2", "fault": "F9", "source_matlab_commit": "035f1475fd92e5639ff9b7fb78eb678ed2976e1c", "created_at": "2026-09-01T00:00:00Z"},
+  "arrays": {}
+}

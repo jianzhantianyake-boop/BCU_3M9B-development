@@ -12,16 +12,16 @@ $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmssZ')
 $reportDir = Join-Path $RepoRoot "validation/reports/$stamp"
 New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
 $tasks = @(
-    @{ Path = 'python_bcu/tests/smoke_test.py'; Cwd = 'python_bcu' },
-    @{ Path = 'python_bcu_v2/run_validation.py'; Cwd = 'python_bcu_v2' },
-    @{ Path = 'python_bcu_v2/run_matlab_xval.py'; Cwd = 'python_bcu_v2' },
-    @{ Path = 'python_bcu_v2/test_fixes.py'; Cwd = 'python_bcu_v2' },
-    @{ Path = 'python_bcu_v2/test_spm_dae.py'; Cwd = 'python_bcu_v2' },
-    @{ Path = 'python_bcu_v2/test_solvers.py'; Cwd = 'python_bcu_v2' },
-    @{ Path = 'python_bcu_v2/test_p2.py'; Cwd = 'python_bcu_v2' },
-    @{ Path = 'python_bcu_v2/test_config.py'; Cwd = 'python_bcu_v2' },
-    @{ Path = 'python_bcu_v2/test_cuep.py'; Cwd = 'python_bcu_v2' },
-    @{ Path = 'python_bcu_v2/run_full_xval.py'; Cwd = 'python_bcu_v2' }
+    @{ Path = 'python_bcu/tests/smoke_test.py'; Arg = 'tests/smoke_test.py'; Cwd = 'python_bcu' },
+    @{ Path = 'python_bcu_v2/run_validation.py'; Arg = 'run_validation.py'; Cwd = 'python_bcu_v2' },
+    @{ Path = 'python_bcu_v2/run_matlab_xval.py'; Arg = 'run_matlab_xval.py'; Cwd = 'python_bcu_v2' },
+    @{ Path = 'python_bcu_v2/test_fixes.py'; Arg = 'test_fixes.py'; Cwd = 'python_bcu_v2' },
+    @{ Path = 'python_bcu_v2/test_spm_dae.py'; Arg = 'test_spm_dae.py'; Cwd = 'python_bcu_v2' },
+    @{ Path = 'python_bcu_v2/test_solvers.py'; Arg = 'test_solvers.py'; Cwd = 'python_bcu_v2' },
+    @{ Path = 'python_bcu_v2/test_p2.py'; Arg = 'test_p2.py'; Cwd = 'python_bcu_v2' },
+    @{ Path = 'python_bcu_v2/test_config.py'; Arg = 'test_config.py'; Cwd = 'python_bcu_v2' },
+    @{ Path = 'python_bcu_v2/test_cuep.py'; Arg = 'test_cuep.py'; Cwd = 'python_bcu_v2' },
+    @{ Path = 'python_bcu_v2/run_full_xval.py'; Arg = 'run_full_xval.py'; Cwd = 'python_bcu_v2' }
 )
 $records = [System.Collections.Generic.List[object]]::new()
 foreach ($task in $tasks) {
@@ -33,7 +33,7 @@ foreach ($task in $tasks) {
     if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
         Set-Content -LiteralPath $stderr -Value 'script not found' -Encoding utf8
     } else {
-        $proc = Start-Process -FilePath $PythonExe -ArgumentList @('-B', (Split-Path $task.Path -Leaf)) -WorkingDirectory (Join-Path $RepoRoot $task.Cwd) -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+        $proc = Start-Process -FilePath $PythonExe -ArgumentList @('-B', $task.Arg) -WorkingDirectory (Join-Path $RepoRoot $task.Cwd) -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
         $finished = $proc.WaitForExit([Math]::Max(1, $TimeoutMinutes) * 60 * 1000)
         if (-not $finished) {
             $proc.Kill()

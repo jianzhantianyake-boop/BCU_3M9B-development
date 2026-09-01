@@ -86,6 +86,16 @@ foreach ($d in @('matlab_platform','python_bcu','python_bcu_v2')) {
         $report.source_commits[$d] = (git -c "safe.directory=$p" -C $p rev-parse HEAD 2>$null)
     }
 }
+if ($report.source_commits.Count -eq 0) {
+    $manifest = Join-Path $RepoRoot 'SOURCE_MANIFEST.csv'
+    if (Test-Path -LiteralPath $manifest) {
+        foreach ($row in (Import-Csv -LiteralPath $manifest | Select-Object -First 1000)) {
+            if (-not $report.source_commits.Contains($row.platform)) {
+                $report.source_commits[$row.platform] = $row.source_commit
+            }
+        }
+    }
+}
 
 if ($blocked) { $report.status = 'BLOCKED' }
 $report | ConvertTo-Json -Depth 8
