@@ -100,7 +100,7 @@ def trace_spm_mgp(static, *, segment_dt: float = 1e-3,
     """
 
     from bcu_3m9b.cuep import coi_mismatch
-    from bcu_3m9b.dynamics import integrate_reduced
+    from bcu_3m9b.dynamics import find_exitpoint, integrate_reduced
 
     preset, post, yfull, epu, ngen, nnet = _context(static)
     if segment_dt <= 0 or segment_steps <= 0 or max_segments <= 0:
@@ -109,13 +109,21 @@ def trace_spm_mgp(static, *, segment_dt: float = 1e-3,
     try:
         d0 = np.asarray(static.prefault.sep_delta, dtype=float)
         w0 = np.full(ngen, float(static.prefault.sep_omegapu) * static.basevalue.omega_b)
-        horizon = max(segment_dt * segment_steps * min(max_segments, 20), 0.05)
+        # MATLAB Cal_MM_CCT_SPM integrates the fault trajectory for 0.5 s and
+        # seeds MGP at the first post-fault power/relative-speed dot-product
+        # crossing.  The previous implementation used a short (at most
+        # 0.2 s) horizon and selected the largest mismatch, which is a point
+        # on the pre-escape trajectory and cannot reproduce the MGP update
+        # chain.  Keep the registered MATLAB horizon while allowing callers
+        # to request a longer diagnostic trajectory.
+        horizon = max(0.5, segment_dt * segment_steps * min(max_segments, 20))
         fault_traj = integrate_reduced(horizon, segment_dt, static.fault, preset,
                                        static.basevalue, d0, w0)
-        # 选择故障轨迹上约简功率失配最大的点作为物理逃逸播种点。
-        norms = np.array([np.linalg.norm(coi_mismatch(x, post.yred, preset))
-                          for x in fault_traj.thetac])
-        idx = int(np.argmax(norms)) if norms.size else 0
+        # Use the same sign-change exit criterion as the MATLAB SPM entry
+        # point.  It is deliberately evaluated on the post-fault reduced
+        # network only for the seed; all subsequent network states are solved
+        # on the full SPM branch below.
+        idx = find_exitpoint(fault_traj, post, preset)
         delta = _project_coi(fault_traj.thetac[idx], preset.m)
     except Exception as exc:  # noqa: BLE001
         return _failure_mgp(static, f"fault escape seed failed: {exc}")
