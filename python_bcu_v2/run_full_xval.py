@@ -236,6 +236,7 @@ def inspect_spm_cuep_reference(path: Path) -> dict:
         spm_network_residual(np.r_[theta, voltage], delta, yfull, preset.epu)
     ))
     raw_residual = float("nan")
+    corrected_raw_residual = float("nan")
     raw_theta = arrays.get("cuep_raw_net_theta")
     if raw_theta is not None:
         raw_theta = np.asarray(raw_theta, dtype=float).reshape(-1)
@@ -243,6 +244,18 @@ def inspect_spm_cuep_reference(path: Path) -> dict:
             raw_residual = float(np.linalg.norm(
                 spm_network_residual(np.r_[raw_theta, voltage], delta, yfull, preset.epu)
             ))
+            # The compact exporter retains the raw fsolve network angles in
+            # the machine-reference frame and stores the positive COI shift
+            # as ``cuep_frame_shift``.  Add that shift back to obtain the
+            # physical common-angle frame used by the SPM equations.  This is
+            # diagnostic-only; the historical projected fields remain gated.
+            frame_shift = arrays.get("cuep_frame_shift")
+            if frame_shift is not None and np.isfinite(float(frame_shift)):
+                corrected_theta = raw_theta + float(frame_shift)
+                corrected_raw_residual = float(np.linalg.norm(
+                    spm_network_residual(np.r_[corrected_theta, voltage],
+                                          delta, yfull, preset.epu)
+                ))
     comparable = bool(residual < 1e-6 and np.all(voltage > 1e-4))
     reason = "" if comparable else (
         f"MATLAB CUEP network residual={residual:.6g}; "
@@ -252,6 +265,7 @@ def inspect_spm_cuep_reference(path: Path) -> dict:
         "comparable": comparable,
         "network_residual": residual,
         "raw_network_residual": raw_residual,
+        "corrected_raw_network_residual": corrected_raw_residual,
         "reason": reason,
     }
 
@@ -333,6 +347,12 @@ def verify_spm_cct() -> dict:
     cuep_diagnostics = inspect_spm_cuep_reference(REFERENCE_DIR / ref)
     if not cuep_diagnostics["comparable"]:
         limitations.append(cuep_diagnostics["reason"])
+    corrected_raw = cuep_diagnostics.get("corrected_raw_network_residual")
+    if np.isfinite(corrected_raw):
+        limitations.append(
+            f"raw fsolve 网络角加回记录的 COI 平移后残差={corrected_raw:.6g}；"
+            "该物理坐标诊断值不替代 projected 参考字段"
+        )
     if np.isfinite(reference_data.get("arrays", {}).get("e_critical", np.nan)):
         limitations.append(
             f"MATLAB 历史管线 E_critical={float(reference_data['arrays']['e_critical']):.6g}；"

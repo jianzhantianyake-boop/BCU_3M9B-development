@@ -40,6 +40,13 @@ class SpmXvalGateTests(unittest.TestCase):
         entry = run_full_xval.verify_spm_cct()
         self.assertTrue(any("network residual" in item for item in entry["limitations"]))
 
+    def test_matlab_cuep_raw_frame_correction_is_physical(self):
+        diagnostics = run_full_xval.inspect_spm_cuep_reference(
+            ROOT.parent / "validation" / "references" / "spm_cct_v1.json"
+        )
+        self.assertIn("corrected_raw_network_residual", diagnostics)
+        self.assertLess(diagnostics["corrected_raw_network_residual"], 1e-6)
+
     def test_spm_cct_energy_gate_uses_matlab_half_second_window(self):
         entry = run_full_xval.verify_spm_cct()
         self.assertTrue(any("5.567" in item
