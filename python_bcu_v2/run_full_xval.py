@@ -181,6 +181,81 @@ def inspect_spm_fault_reference(path: Path) -> dict:
     }
 
 
+def inspect_spm_cuep_reference(path: Path) -> dict:
+    """Check the physical SPM network residual of a compact CUEP reference.
+
+    The historical MATLAB exporter stores a projected CUEP network angle.  A
+    finite ``E_critical`` or a successful MATLAB ``fsolve`` call is not enough
+    to make that state a usable physical reference: the state must satisfy the
+    same ``Yfull_mod`` P/Q equations used by the strict Python SPM solver.
+    This diagnostic is read-only and deliberately rejects a reference with a
+    large residual instead of silently treating it as an energy target.
+    """
+    from bcu_3m9b import build_static_result
+    from bcu_v2.reference_io import load_reference
+    from bcu_v2.spm_energy import spm_network_residual
+
+    try:
+        data = load_reference(Path(path))
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "comparable": False,
+            "network_residual": float("inf"),
+            "raw_network_residual": float("inf"),
+            "reason": f"CUEP reference cannot be loaded: {exc}",
+        }
+    arrays = data.get("arrays", {})
+    required = ("cuep_delta", "cuep_net_theta", "cuep_net_voltage")
+    missing = [name for name in required if name not in arrays]
+    if missing:
+        return {
+            "comparable": False,
+            "network_residual": float("inf"),
+            "raw_network_residual": float("inf"),
+            "reason": f"CUEP reference missing arrays: {', '.join(missing)}",
+        }
+
+    static = build_static_result()
+    preset = static.preset
+    yfull = np.asarray(static.postfault.metadata["yfull_mod"], dtype=complex)
+    delta = np.asarray(arrays["cuep_delta"], dtype=float).reshape(-1)
+    theta = np.asarray(arrays["cuep_net_theta"], dtype=float).reshape(-1)
+    voltage = np.asarray(arrays["cuep_net_voltage"], dtype=float).reshape(-1)
+    nnet = int(yfull.shape[0] - preset.ngen)
+    if (delta.size != preset.ngen or theta.size != nnet or voltage.size != nnet
+            or not (np.all(np.isfinite(delta)) and np.all(np.isfinite(theta))
+                    and np.all(np.isfinite(voltage)))):
+        return {
+            "comparable": False,
+            "network_residual": float("inf"),
+            "raw_network_residual": float("inf"),
+            "reason": "CUEP reference shapes or values are incompatible with 3M9B",
+        }
+
+    residual = float(np.linalg.norm(
+        spm_network_residual(np.r_[theta, voltage], delta, yfull, preset.epu)
+    ))
+    raw_residual = float("nan")
+    raw_theta = arrays.get("cuep_raw_net_theta")
+    if raw_theta is not None:
+        raw_theta = np.asarray(raw_theta, dtype=float).reshape(-1)
+        if raw_theta.size == nnet and np.all(np.isfinite(raw_theta)):
+            raw_residual = float(np.linalg.norm(
+                spm_network_residual(np.r_[raw_theta, voltage], delta, yfull, preset.epu)
+            ))
+    comparable = bool(residual < 1e-6 and np.all(voltage > 1e-4))
+    reason = "" if comparable else (
+        f"MATLAB CUEP network residual={residual:.6g}; "
+        "projected CUEP state is not a physical SPM network root"
+    )
+    return {
+        "comparable": comparable,
+        "network_residual": residual,
+        "raw_network_residual": raw_residual,
+        "reason": reason,
+    }
+
+
 def _spm_frame_limitations(data: dict) -> list[str]:
     """Detect the known MATLAB SPM projected/raw network-angle mismatch.
 
@@ -255,6 +330,9 @@ def verify_spm_cct() -> dict:
     except Exception as exc:  # noqa: BLE001
         return _entry("spm_cct", "FAILED", ref, limitations=[f"自足求解异常: {exc}"])
     limitations = _spm_frame_limitations(reference_data)
+    cuep_diagnostics = inspect_spm_cuep_reference(REFERENCE_DIR / ref)
+    if not cuep_diagnostics["comparable"]:
+        limitations.append(cuep_diagnostics["reason"])
     if np.isfinite(reference_data.get("arrays", {}).get("e_critical", np.nan)):
         limitations.append(
             f"MATLAB 历史管线 E_critical={float(reference_data['arrays']['e_critical']):.6g}；"

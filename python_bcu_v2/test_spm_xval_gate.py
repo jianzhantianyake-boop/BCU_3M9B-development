@@ -31,6 +31,15 @@ class SpmXvalGateTests(unittest.TestCase):
         self.assertTrue(all("3.375" not in item or "历史" in item
                             for item in entry["limitations"]))
 
+    def test_matlab_cuep_reference_must_pass_physical_network_gate(self):
+        diagnostics = run_full_xval.inspect_spm_cuep_reference(
+            ROOT.parent / "validation" / "references" / "spm_cct_v1.json"
+        )
+        self.assertFalse(diagnostics["comparable"])
+        self.assertGreater(diagnostics["network_residual"], 1e-6)
+        entry = run_full_xval.verify_spm_cct()
+        self.assertTrue(any("network residual" in item for item in entry["limitations"]))
+
     def test_matlab_fault_reference_is_flagged_when_network_residual_is_large(self):
         path = ROOT.parent / "validation" / "references" / "spm_numerical_v1.json"
         diagnostics = run_full_xval.inspect_spm_fault_reference(path)
