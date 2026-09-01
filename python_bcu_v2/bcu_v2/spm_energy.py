@@ -71,8 +71,13 @@ def spm_network_residual(x: np.ndarray, delta_gen: np.ndarray, yfull: np.ndarray
 
 def solve_spm_network(delta_gen: np.ndarray, yfull: np.ndarray, epu: np.ndarray,
                       guess: Optional[np.ndarray] = None, sload_pq=None,
-                      tol: float = 1e-12) -> Tuple[np.ndarray, bool, float]:
-    """解 SPM 网络代数方程, 返回 (x=[delta_net; V_net], 是否收敛, 残差范数)。"""
+                      tol: float = 1e-12, voltage_min: float = 1e-4) -> Tuple[np.ndarray, bool, float]:
+    """解 SPM 网络代数方程。
+
+    返回 ``(x=[delta_net; V_net], converged, residual_norm)``。除残差外，
+    ``converged`` 还要求所有网络电压大于 ``voltage_min``，以排除方程的
+    零电压数学根；连续 warm-start 仍由调用者负责提供物理分支初值。
+    """
 
     from scipy.optimize import root
 
@@ -83,7 +88,14 @@ def solve_spm_network(delta_gen: np.ndarray, yfull: np.ndarray, epu: np.ndarray,
     sol = root(lambda x: spm_network_residual(x, delta_gen, yfull, epu, sload_pq),
                np.asarray(guess, dtype=float), method="hybr", tol=tol)
     r = float(np.linalg.norm(spm_network_residual(sol.x, delta_gen, yfull, epu, sload_pq)))
-    return sol.x, bool(sol.success and r < 1e-6), r
+    # The algebraic equations admit mathematically valid zero-voltage roots
+    # (especially from cold/random starts).  They are not admissible network
+    # states and must never be allowed to masquerade as a physical branch.
+    nnet = int(yfull.shape[0]) - ngen
+    voltages = np.asarray(sol.x[nnet:], dtype=float)
+    physical_voltage = bool(np.all(np.isfinite(voltages)) and
+                            np.all(voltages > float(voltage_min)))
+    return sol.x, bool(sol.success and r < 1e-6 and physical_voltage), r
 
 
 # ------------------------- 发电机电磁功率(经 Yfull_mod) -------------------------

@@ -15,6 +15,12 @@ import numpy as np
 from . import spm_energy
 
 
+# Registered tolerances for the SPM branch gate.  ``branch_continuity_error``
+# is the largest state change between adjacent warm-start continuation points;
+# it is reported separately from the algebraic residual.
+SPM_BRANCH_CONTINUITY_TOL = 0.1
+
+
 @dataclass
 class SpmMgpResult:
     delta_gen: np.ndarray
@@ -42,6 +48,8 @@ class SpmCuepResult:
     converged: bool
     used_external_ecritical: bool = False
     exit_reason: str = ""
+    energy_peak: float = float("nan")
+    coordinate_frame: str = "coi_consistent"
 
 
 @dataclass
@@ -236,7 +244,10 @@ def solve_spm_cuep(static, mgp: Optional[SpmMgpResult] = None, *,
     # 网络分支连续追踪：从 SEP 到候选角度逐点 warm-start。
     states = [sep_net.copy()]
     previous = sep_net.copy()
-    for alpha in np.linspace(0.0, 1.0, 65)[1:]:
+    # A finer homotopy is inexpensive for the six algebraic network states and
+    # materially reduces the chance that Newton crosses to another voltage
+    # branch near the CUEP.
+    for alpha in np.linspace(0.0, 1.0, 257)[1:]:
         delta = _project_coi(sep + alpha * (target - sep), preset.m)
         previous, ok, residual = spm_energy.solve_spm_network(delta, yfull, epu,
                                                                guess=previous, tol=1e-12)
@@ -280,6 +291,12 @@ def solve_spm_cuep(static, mgp: Optional[SpmMgpResult] = None, *,
                                      np.sum(preset.m)) * pcoi
     equilibrium_residual = float(np.linalg.norm(projected_mismatch))
     continuity = float(max(np.linalg.norm(np.diff(np.asarray(states), axis=0), axis=1), default=0.0))
+    if continuity >= SPM_BRANCH_CONTINUITY_TOL:
+        return SpmCuepResult(delta_gen, theta_net, voltage_net, 0.0,
+                             equilibrium_residual, network_residual, continuity, float("nan"),
+                             "UNVERIFIED", False,
+                             exit_reason=(f"network branch step {continuity:.6g} exceeds "
+                                          f"registered tolerance {SPM_BRANCH_CONTINUITY_TOL:g}"))
     if (not joint.success) or network_residual >= residual_tol or equilibrium_residual >= residual_tol:
         return SpmCuepResult(delta_gen, theta_net, voltage_net, 0.0,
                              equilibrium_residual, network_residual, continuity, float("nan"),
@@ -302,13 +319,15 @@ def solve_spm_cuep(static, mgp: Optional[SpmMgpResult] = None, *,
         return SpmCuepResult(delta_gen, theta_net, voltage_net, pcoi / np.sum(preset.m),
                              equilibrium_residual, network_residual, continuity, ecritical,
                              equilibrium_type, False, used_external_ecritical=False,
-                             exit_reason=f"E_critical={ecritical:.6g} exceeds fault energy peak={peak:.6g}")
+                             exit_reason=f"E_critical={ecritical:.6g} exceeds fault energy peak={peak:.6g}",
+                             energy_peak=peak)
     return SpmCuepResult(delta_gen, theta_net, voltage_net, pcoi / np.sum(preset.m),
                          equilibrium_residual, network_residual, continuity, ecritical,
                          equilibrium_type, bool(equilibrium_type.startswith("type-1") and
                                                 ecritical > 0.0),
                          used_external_ecritical=False,
-                         exit_reason="joint SPM equilibrium converged")
+                         exit_reason="joint SPM equilibrium converged",
+                         energy_peak=peak)
 
 
 def spm_self_contained_cct(static, *, tfault: float = 0.6,

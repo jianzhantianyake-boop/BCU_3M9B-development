@@ -59,6 +59,20 @@ class ReferenceIoTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("non-available reference must include reason", errors)
 
+    def test_current_spm_reference_exposes_raw_frame_diagnostic(self) -> None:
+        """The historical MATLAB energy reference must not hide a frame mismatch."""
+        path = Path(__file__).resolve().parents[1] / "validation" / "references" / "spm_cct_v1.json"
+        if not path.exists():
+            self.skipTest("compact SPM reference has not been exported")
+        data = load_reference(path)
+        arrays = data["arrays"]
+        required = {"cuep_raw_net_theta", "cuep_frame_shift", "cuep_net_theta"}
+        self.assertTrue(required.issubset(arrays))
+        raw = np.asarray(arrays["cuep_raw_net_theta"], dtype=float)
+        projected = np.asarray(arrays["cuep_net_theta"], dtype=float)
+        coherent = raw + float(arrays["cuep_frame_shift"])
+        self.assertGreater(float(np.max(np.abs(coherent - projected))), 1e-6)
+
 
 if __name__ == "__main__":
     unittest.main()

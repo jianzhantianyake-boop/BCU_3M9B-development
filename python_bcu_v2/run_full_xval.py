@@ -66,6 +66,37 @@ def _reference_status(filename: str) -> tuple[str, list[str]]:
     return "AVAILABLE", []
 
 
+def _load_reference_record(filename: str) -> dict:
+    """Load one compact reference for diagnostics without changing status rules."""
+    from bcu_v2.reference_io import load_reference
+    return load_reference(REFERENCE_DIR / filename)
+
+
+def _spm_frame_limitations(data: dict) -> list[str]:
+    """Detect the known MATLAB SPM projected/raw network-angle mismatch.
+
+    The MATLAB exporter now retains the raw fsolve vector.  If the projected
+    and raw fields do not describe the same common-angle frame, the reference
+    may still be useful as historical evidence, but it is not a like-for-like
+    physical energy reference.
+    """
+    arrays = data.get("arrays", {})
+    required = {"cuep_raw_net_theta", "cuep_frame_shift", "cuep_net_theta"}
+    if not required.issubset(arrays):
+        return []
+    raw_net = np.asarray(arrays["cuep_raw_net_theta"], dtype=float)
+    exported_net = np.asarray(arrays["cuep_net_theta"], dtype=float)
+    shift = float(arrays["cuep_frame_shift"])
+    coherent = raw_net + shift
+    mismatch = float(np.max(np.abs(coherent - exported_net)))
+    if mismatch > 1e-6:
+        return [
+            ("MATLAB SPM 紧凑参考同时保留 raw fsolve 与 projected 网络角；两者最大坐标差 "
+             f"为 {mismatch:.6g}，历史 E_critical 不能与物理 COI 一致坐标直接比较"),
+        ]
+    return []
+
+
 def _matlab_path(name: str, ref: str, historical: str) -> dict:
     status, limitations = _reference_status(ref)
     if status == "AVAILABLE":
@@ -107,17 +138,24 @@ def verify_spm_cct() -> dict:
         return _entry("spm_cct", "MATLAB_XVAL_PARTIAL" if ref_status == "BLOCKED" else ref_status,
                       ref, limitations=limitations + ["自足 CUEP 尚未取得 MATLAB 紧凑参考"])
     try:
+        reference_data = _load_reference_record(ref)
         from bcu_v2 import config as C
         from bcu_v2.spm_cuep import spm_self_contained_cct
         static = C.build_static_from_config(C.apply_overrides(C.load_config(), {"mode": "spm_cct"}))
         result = spm_self_contained_cct(static)
     except Exception as exc:  # noqa: BLE001
         return _entry("spm_cct", "FAILED", ref, limitations=[f"自足求解异常: {exc}"])
+    limitations = _spm_frame_limitations(reference_data)
+    if np.isfinite(reference_data.get("arrays", {}).get("e_critical", np.nan)):
+        limitations.append(
+            f"MATLAB 历史管线 E_critical={float(reference_data['arrays']['e_critical']):.6g}；"
+            "该数值仅作历史参考，未作为 Python 自足输入"
+        )
     if not result.converged:
         return _entry("spm_cct", "UNVERIFIED", ref,
-                      limitations=[result.exit_reason or "SPM 自足 CUEP 未收敛"])
+                      limitations=[result.exit_reason or "SPM 自足 CUEP 未收敛"] + limitations)
     return _entry("spm_cct", "MATLAB_XVAL_FULL", ref, passed=1, total=1,
-                  limitations=["需在 MATLAB 可用后复核固定参考数值"])
+                  limitations=["需在 MATLAB 可用后复核固定参考数值"] + limitations)
 
 
 def verify_spm_numerical() -> dict:

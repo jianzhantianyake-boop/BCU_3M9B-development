@@ -20,6 +20,7 @@ from bcu_v2.spm_cuep import (
     spm_self_contained_cct,
     trace_spm_mgp,
 )
+from bcu_v2.spm_energy import solve_spm_network
 
 
 class SpmCuepTests(unittest.TestCase):
@@ -53,6 +54,16 @@ class SpmCuepTests(unittest.TestCase):
             self.assertEqual(cct, result.cct)
         self.assertEqual(ok, result.converged)
         self.assertFalse(result.used_external_ecritical)
+
+    def test_zero_voltage_algebraic_root_is_not_physical_success(self):
+        yfull = np.asarray(self.static.postfault.metadata["yfull_mod"])
+        zero_guess = np.zeros(2 * (yfull.shape[0] - self.static.preset.ngen))
+        _, converged, residual = solve_spm_network(
+            self.static.postfault.sep_delta, yfull, self.static.preset.epu,
+            guess=zero_guess,
+        )
+        self.assertFalse(converged)
+        self.assertLess(residual, 1e-8)
 
 
 if __name__ == "__main__":

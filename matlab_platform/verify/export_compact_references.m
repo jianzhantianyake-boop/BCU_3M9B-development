@@ -55,6 +55,18 @@ try
             'sep_net_theta', pf.net_delta(:).', 'sep_net_voltage', pf.net_voltage(:).', ...
             'cuep_net_theta', pf.CUEP_net_theta(:).', 'cuep_net_voltage', pf.CUEP_net_voltage(:).', ...
             'e_critical', cr.Ep, 'lea_cct', cr.LEA.CCT);
+        % Cal_MM_CCT_SPM keeps the raw fsolve vector in base workspace.  It is
+        % exported only as a diagnostic so a consumer can distinguish the
+        % consistent common-angle frame from the historical projected fields.
+        if evalin('base', 'exist(''Results_fsolve'', ''var'')')
+            raw = evalin('base', 'Results_fsolve');
+            ngen = numel(pf.SEP_delta);
+            nnet = numel(pf.net_delta);
+            spm.arrays.cuep_raw_delta = raw(1:ngen-1).';
+            spm.arrays.cuep_raw_omega_coi = raw(ngen);
+            spm.arrays.cuep_raw_net_theta = raw((ngen+1):(ngen+nnet)).';
+            spm.arrays.cuep_frame_shift = pf.CUEP_delta(ngen);
+        end
     end
 catch err
     spm.status = 'BLOCKED'; spm.reason = ['MATLAB SPM 导出失败: ' err.message];

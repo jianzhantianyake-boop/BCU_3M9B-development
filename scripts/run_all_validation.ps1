@@ -33,15 +33,44 @@ foreach ($task in $tasks) {
     if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
         Set-Content -LiteralPath $stderr -Value 'script not found' -Encoding utf8
     } else {
-        $proc = Start-Process -FilePath $PythonExe -ArgumentList @('-B', $task.Arg) -WorkingDirectory (Join-Path $RepoRoot $task.Cwd) -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
-        $finished = $proc.WaitForExit([Math]::Max(1, $TimeoutMinutes) * 60 * 1000)
-        if (-not $finished) {
-            $proc.Kill()
+        # Use ProcessStartInfo with shell execution disabled.  Start-Process
+        # can return 0xC0000142 for an otherwise runnable Python executable
+        # when this repository is under a non-ASCII Windows path; direct
+        # invocation and this API use the same interpreter and working dir.
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = $PythonExe
+        $psi.Arguments = '-B "' + $task.Arg + '"'
+        $psi.WorkingDirectory = (Join-Path $RepoRoot $task.Cwd)
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $proc = [System.Diagnostics.Process]::new()
+        $proc.StartInfo = $psi
+        try {
+            [void]$proc.Start()
+            $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+            $stderrTask = $proc.StandardError.ReadToEndAsync()
+            $finished = $proc.WaitForExit([Math]::Max(1, $TimeoutMinutes) * 60 * 1000)
+            if (-not $finished) {
+                $proc.Kill()
+                $status = 'BLOCKED'
+                $exitCode = -2
+            } else {
+                # Wait for redirected streams after process termination so no
+                # diagnostic output is lost or deadlocked in a pipe.
+                $stdoutTask.Wait(); $stderrTask.Wait()
+                Set-Content -LiteralPath $stdout -Value $stdoutTask.Result -Encoding utf8
+                Set-Content -LiteralPath $stderr -Value $stderrTask.Result -Encoding utf8
+                $exitCode = $proc.ExitCode
+                $status = if ($exitCode -eq 0) { 'PASSED' } else { 'FAILED' }
+            }
+        } catch {
+            Set-Content -LiteralPath $stderr -Value $_.Exception.ToString() -Encoding utf8
             $status = 'BLOCKED'
             $exitCode = -2
-        } else {
-            $exitCode = $proc.ExitCode
-            $status = if ($exitCode -eq 0) { 'PASSED' } else { 'FAILED' }
+        } finally {
+            $proc.Dispose()
         }
     }
     $end = Get-Date

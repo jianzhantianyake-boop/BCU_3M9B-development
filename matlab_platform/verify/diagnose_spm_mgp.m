@@ -101,8 +101,7 @@ portable = char(pathName);
 marker = [filesep 'matlab_platform' filesep];
 idx = strfind(portable, marker);
 if ~isempty(idx)
-    portable = portable(idx(end) + numel(filesep):end);
-    portable = ['matlab_platform' filesep portable];
+    portable = portable(idx(end) + 1:end);
 end
 portable = strrep(portable, '\', '/');
 end
