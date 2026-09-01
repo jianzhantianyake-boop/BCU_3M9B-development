@@ -342,8 +342,81 @@ def verify_spm_numerical() -> dict:
 
 
 def verify_spm_region() -> dict:
-    return _entry("spm_region", "UNVERIFIED", "spm_cct_v1.json",
-                  limitations=["SPM 平衡点/稳定域导出与 MATLAB 对照尚未完成"])
+    ref = "spm_region_v1.json"
+    status, limitations = _reference_status(ref)
+    if status != "AVAILABLE":
+        return _entry("spm_region", status, ref,
+                      limitations=limitations + ["尚无可用 MATLAB SPM 平衡点参考"])
+    try:
+        from bcu_3m9b import build_static_result
+        from bcu_v2.reference_io import as_numpy, load_reference
+        from bcu_v2.spm_region import enumerate_spm_equilibria
+
+        reference = load_reference(REFERENCE_DIR / ref)
+        arrays = reference["arrays"]
+        ref_delta = as_numpy(arrays["delta_gen"]).astype(float)
+        ref_theta = as_numpy(arrays["theta_net"]).astype(float)
+        ref_voltage = as_numpy(arrays["voltage_net"]).astype(float)
+        ref_types = [str(x) for x in arrays.get("equilibrium_type", [])]
+        ref_branch = [str(x) for x in arrays.get("branch_id", [])]
+        static = build_static_result()
+        records = enumerate_spm_equilibria(static, grid_points=21)
+    except Exception as exc:  # noqa: BLE001
+        return _entry("spm_region", "FAILED", ref,
+                      limitations=[f"SPM 平衡点对照异常: {exc}"])
+
+    if ref_delta.ndim != 2 or ref_theta.ndim != 2 or ref_voltage.ndim != 2:
+        return _entry("spm_region", "FAILED", ref,
+                      limitations=["参考平衡点数组必须是二维"])
+    if not (len(records) == ref_delta.shape[0] == ref_theta.shape[0] == ref_voltage.shape[0]):
+        return _entry("spm_region", "UNVERIFIED", ref,
+                      total=4, error=float("inf"),
+                      limitations=[f"平衡点数量不一致: Python={len(records)}, MATLAB={ref_delta.shape[0]}"])
+
+    # 通过类型匹配，避免依赖独立实现产生的顺序或 branch_id 文本。
+    py_by_type = {}
+    for item in records:
+        py_by_type.setdefault(item.equilibrium_type, []).append(item)
+    ref_by_type = {}
+    for i, typ in enumerate(ref_types):
+        ref_by_type.setdefault(typ, []).append(i)
+    errors = []
+    checks = []
+    for typ, indices in ref_by_type.items():
+        py_items = py_by_type.get(typ, [])
+        checks.append(len(py_items) == len(indices))
+        if len(py_items) != len(indices):
+            continue
+        # 对同一类型的少量点按发电机角排序后逐点比较。
+        py_items = sorted(py_items, key=lambda x: tuple(np.round(x.delta_gen, 8)))
+        indices = sorted(indices, key=lambda i: tuple(np.round(ref_delta[i], 8)))
+        for item, i in zip(py_items, indices):
+            def periodic_max(a, b):
+                diff = np.asarray(a) - np.asarray(b)
+                return float(np.max(np.abs(np.arctan2(np.sin(diff), np.cos(diff)))))
+            e_delta = periodic_max(item.delta_gen, ref_delta[i])
+            e_theta = periodic_max(item.theta_net, ref_theta[i])
+            e_voltage = float(np.max(np.abs(item.voltage_net - ref_voltage[i])))
+            errors.extend([e_delta, e_theta, e_voltage, float(item.residual_norm)])
+            checks.extend([e_delta < 1e-6, e_theta < 1e-6,
+                           e_voltage < 1e-6, item.residual_norm < 1e-6])
+
+    if not errors or not all(checks):
+        return _entry("spm_region", "UNVERIFIED", ref,
+                      passed=int(sum(checks)), total=len(checks),
+                      error=max(errors, default=float("inf")),
+                      limitations=["MATLAB/Python 平衡点状态或类型未在登记容差内一致"])
+
+    # 当前参考只含平衡点集合；稳定域抽样/边界曲线仍需独立 MATLAB 检查点。
+    limitations = limitations + [
+        "平衡点位置、网络状态、类型和残差已逐项对照；MATLAB 稳定域抽样/边界曲线尚未导出",
+        "MATLAB 与 Python branch_id 为各自生成的标识，按类型和状态匹配而非比较文本",
+    ]
+    if ref_branch and len(ref_branch) != len(ref_types):
+        limitations.append("MATLAB branch_id 数量与平衡点记录不一致")
+    return _entry("spm_region", "MATLAB_XVAL_PARTIAL", ref,
+                  passed=int(sum(checks)), total=len(checks),
+                  error=max(errors, default=float("nan")), limitations=limitations)
 
 
 def build_report() -> dict:

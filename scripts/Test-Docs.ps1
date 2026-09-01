@@ -54,7 +54,11 @@ foreach ($row in $rows) {
 }
 
 $allowedExtensions = @('.md','.py','.m','.ps1','.json','.csv','.yaml','.yml','.toml','.txt','.ps','.gitignore','')
-$tracked = @(git -c core.quotePath=false -C $root ls-files)
+# The integrated checkout may be created by the sandbox service account while
+# validation runs as the user's account.  Pass an explicit, narrow safe
+# directory so a dubious-ownership warning cannot silently turn the tracked
+# file list into an empty list.
+$tracked = @(git -c "safe.directory=$root" -c core.quotePath=false -C $root ls-files)
 foreach ($relative in $tracked) {
     $normalized = $relative -replace '\\', '/'
     if ($normalized -match '(^|/)(C1_Matpower|results|figures|__pycache__|\.git)(/|$)' -or

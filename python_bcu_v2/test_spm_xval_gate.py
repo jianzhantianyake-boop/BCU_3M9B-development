@@ -30,6 +30,14 @@ class SpmXvalGateTests(unittest.TestCase):
         self.assertGreater(diagnostics["max_fault_residual"], 1e-6)
         self.assertIn("fault1", diagnostics["reason"])
 
+    def test_spm_region_compares_state_and_keeps_curve_gap_explicit(self):
+        entry = run_full_xval.verify_spm_region()
+        self.assertEqual(entry["status"], "MATLAB_XVAL_PARTIAL")
+        self.assertGreater(entry["checks_total"], 0)
+        self.assertEqual(entry["checks_passed"], entry["checks_total"])
+        self.assertLess(entry["max_error"], 1e-6)
+        self.assertTrue(any("稳定域" in item for item in entry["limitations"]))
+
 
 if __name__ == "__main__":
     unittest.main()
