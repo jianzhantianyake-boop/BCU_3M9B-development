@@ -17,9 +17,10 @@
 ⚠️ 未自足闭环(明确的下一里程碑): 独立求 SPM CUEP 网络态需选对物理分支——SPM 网络方程在 CUEP
 发电机角处有 11+ 个解, MATLAB 靠 MGP(Fun_Cal_MGP_SPM/AEiteration_SPM)沿物理轨迹连续跟踪播种。
 这是与 v1 find_mgp 同源的数值分支难题, 尚未移植稳健的 SPM 版 controlling-UEP。因此 energy CCT 目前
-需外部传入 E_critical(如 3.3757)。物理约束: 正确的 E_crit 须 < 故障能量峰值；当前严格
-fault-network DAE 轨迹在默认案例上的峰值约为 4.64941，旧的 5.568/6.46886 仅是历史代理值；
-若临界能量不低于该峰值，能量法就给不出有限 CCT。
+需外部传入 E_critical(如 3.3757)。物理约束: 正确的 E_crit 须 < 故障能量峰值；按 MATLAB
+登记的 0.5 s 故障窗口、并对每个发电机角重解故障后网络时，默认案例峰值约为 5.56767。
+旧实现把故障网络零占位直接带入能量函数，曾得到 4.64941；该值不再作为物理证据。若
+临界能量不低于正确峰值，能量法就给不出有限 CCT。
 
 单位: 角度 rad, 功率/导纳 pu。发电机在前 ngen 节点, 网络在后。依赖 scipy。
 """
@@ -201,11 +202,15 @@ def spm_fault_energy_series(static, *, tfault: float = 0.6,
                             max_points: int | None = None) -> tuple[np.ndarray, np.ndarray, bool]:
     """Compute total SPM energy on the actual fault-network DAE trajectory.
 
-    The differential trajectory and algebraic states both come from
-    :func:`bcu_v2.spm_dae.simulate_spm_dae`.  The postfault network and SEP are
-    used only as the potential-energy reference, matching the MATLAB energy
-    functional.  A false return flag means that no complete finite series is
-    available; callers must not replace it with a reduced-model result.
+    The differential trajectory comes from
+    :func:`bcu_v2.spm_dae.simulate_spm_dae`.  For every fault generator-angle
+    checkpoint, the postfault algebraic network is solved again by continuous
+    warm-start, matching MATLAB ``Fun_Cal_Exitpoint_SPM`` and
+    ``Fun_Cal_CCT_Energy_SPM``.  The fault-network algebraic state is *not*
+    copied into the postfault energy functional and no zero placeholder is
+    inserted for the removed fault bus.  A false return flag means that no
+    complete finite series is available; callers must not replace it with a
+    reduced-model result.
     """
     if tfault <= 0 or tunit <= 0:
         raise ValueError("tfault and tunit must be positive")
@@ -251,6 +256,7 @@ def spm_fault_energy_series(static, *, tfault: float = 0.6,
         indices = np.arange(count, dtype=int)
     energies = np.full(indices.size, np.nan, dtype=float)
     m = np.asarray(preset.m, dtype=float)
+    post_state = np.asarray(sep_state, dtype=float).copy()
     for out_index, k in enumerate(indices):
         dg = np.asarray(trajectory["delta"][k], dtype=float)
         omega = np.asarray(trajectory["omega"][k], dtype=float)
@@ -258,10 +264,20 @@ def spm_fault_energy_series(static, *, tfault: float = 0.6,
         if not (np.all(np.isfinite(dg)) and np.all(np.isfinite(omega))
                 and np.all(np.isfinite(z_fault))):
             continue
-        theta_net, voltage_net = _expand_fault_network_state(
-            z_fault, fault, postfault, ngen
+        # MATLAB's energy path first reconstructs a postfault algebraic state
+        # for the current generator angles (warm-started from the previous
+        # checkpoint).  Reusing the fault-network state here would leave the
+        # deleted bus as a zero placeholder and changes the energy curve.
+        post_state, post_ok, post_residual = solve_spm_network(
+            dg, ypost, epu, guess=post_state, tol=1e-11,
         )
-        if not (np.all(np.isfinite(theta_net)) and np.all(np.isfinite(voltage_net))):
+        if (not post_ok or not np.all(np.isfinite(post_state))
+                or post_residual >= 1e-6):
+            continue
+        theta_net = np.asarray(post_state[:nnet], dtype=float)
+        voltage_net = np.asarray(post_state[nnet:], dtype=float)
+        if not (np.all(np.isfinite(theta_net)) and np.all(np.isfinite(voltage_net))
+                and np.all(voltage_net > 1e-4)):
             continue
         omega_coi = omega - np.dot(m, omega) / np.sum(m)
         ep = spm_potential_energy(

@@ -311,7 +311,11 @@ def solve_spm_cuep(static, mgp: Optional[SpmMgpResult] = None, *,
     ep = spm_energy.spm_potential_energy(preset, post, yfull, sep, sep_net[:nnet],
                                          sep_net[nnet:], delta_gen, theta_net, voltage_net)
     ecritical = float(np.sum(ep))
-    peak = estimate_spm_fault_energy_peak(static, tfault=0.6, tunit=1e-3)
+    # MATLAB Fun_Cal_CCT_Energy_SPM scans the registered 0.5 s fault
+    # trajectory.  Use that same window for the physical E_critical gate;
+    # the public self-contained CCT interface may still integrate farther
+    # when its caller requests a different ``tfault``.
+    peak = estimate_spm_fault_energy_peak(static, tfault=0.5, tunit=1e-3)
     if np.isfinite(peak) and ecritical >= peak:
         return SpmCuepResult(delta_gen, theta_net, voltage_net, omega_coi,
                              equilibrium_residual, network_residual, continuity, ecritical,

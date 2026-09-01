@@ -86,6 +86,14 @@ class SpmCuepTests(unittest.TestCase):
             )
         self.assertTrue(np.isfinite(peak))
 
+    def test_fault_energy_reconstructs_postfault_network_states(self):
+        """Energy peak must use MATLAB's postfault algebraic reconstruction."""
+        peak = estimate_spm_fault_energy_peak(
+            self.static, tfault=0.5, tunit=1e-3, max_points=64,
+        )
+        self.assertGreater(peak, 5.0)
+        self.assertAlmostEqual(peak, 5.5678, delta=0.1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -40,6 +40,11 @@ class SpmXvalGateTests(unittest.TestCase):
         entry = run_full_xval.verify_spm_cct()
         self.assertTrue(any("network residual" in item for item in entry["limitations"]))
 
+    def test_spm_cct_energy_gate_uses_matlab_half_second_window(self):
+        entry = run_full_xval.verify_spm_cct()
+        self.assertTrue(any("5.567" in item
+                            for item in entry["limitations"]))
+
     def test_matlab_fault_reference_is_flagged_when_network_residual_is_large(self):
         path = ROOT.parent / "validation" / "references" / "spm_numerical_v1.json"
         diagnostics = run_full_xval.inspect_spm_fault_reference(path)
