@@ -334,6 +334,7 @@ def trace_spm_mgp(static, *, segment_dt: float = 1e-3,
     last_residual = float("nan")
     try:
         for _ in range(int(max_segments)):
+            trajectory_start = np.asarray(delta, dtype=float).copy()
             ds, zs, norms, found, norm_min = _spm_mgp_trajectory(
                 delta, z, static, dt=segment_dt, steps=segment_steps,
                 norm_tol=gradient_tol,
@@ -363,7 +364,7 @@ def trace_spm_mgp(static, *, segment_dt: float = 1e-3,
                 delta, z = last_delta, last_z
                 continue
             delta, z = delta_new, z_new
-            shift = float(np.linalg.norm(delta - last_delta))
+            shift = float(np.linalg.norm(delta - trajectory_start))
             if shift < 1e-3:
                 residual = float(np.linalg.norm(spm_energy.spm_network_residual(
                     z, delta, yfull, epu)))
@@ -372,7 +373,7 @@ def trace_spm_mgp(static, *, segment_dt: float = 1e-3,
                     delta, z[:nnet], z[nnet:], gradient_norm, trajectory_count,
                     "MGP ray update repeated", True, residual, continuity,
                 )
-            if shift > 0.5 * float(np.linalg.norm(last_delta - sep)):
+            if shift > 0.5 * float(np.linalg.norm(trajectory_start - sep)):
                 delta, z = last_delta, last_z
             last_residual = float(np.linalg.norm(spm_energy.spm_network_residual(
                 z, delta, yfull, epu)))
