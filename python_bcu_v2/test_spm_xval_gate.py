@@ -46,6 +46,8 @@ class SpmXvalGateTests(unittest.TestCase):
         )
         self.assertIn("corrected_raw_network_residual", diagnostics)
         self.assertLess(diagnostics["corrected_raw_network_residual"], 1e-6)
+        self.assertIn("corrected_raw_e_critical", diagnostics)
+        self.assertAlmostEqual(diagnostics["corrected_raw_e_critical"], 7.57668, delta=1e-2)
 
     def test_spm_cct_energy_gate_uses_matlab_half_second_window(self):
         entry = run_full_xval.verify_spm_cct()

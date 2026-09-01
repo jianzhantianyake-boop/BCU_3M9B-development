@@ -193,7 +193,11 @@ def inspect_spm_cuep_reference(path: Path) -> dict:
     """
     from bcu_3m9b import build_static_result
     from bcu_v2.reference_io import load_reference
-    from bcu_v2.spm_energy import spm_network_residual
+    from bcu_v2.spm_energy import (
+        solve_spm_network,
+        spm_network_residual,
+        spm_potential_energy,
+    )
 
     try:
         data = load_reference(Path(path))
@@ -202,6 +206,8 @@ def inspect_spm_cuep_reference(path: Path) -> dict:
             "comparable": False,
             "network_residual": float("inf"),
             "raw_network_residual": float("inf"),
+            "corrected_raw_network_residual": float("nan"),
+            "corrected_raw_e_critical": float("nan"),
             "reason": f"CUEP reference cannot be loaded: {exc}",
         }
     arrays = data.get("arrays", {})
@@ -212,6 +218,8 @@ def inspect_spm_cuep_reference(path: Path) -> dict:
             "comparable": False,
             "network_residual": float("inf"),
             "raw_network_residual": float("inf"),
+            "corrected_raw_network_residual": float("nan"),
+            "corrected_raw_e_critical": float("nan"),
             "reason": f"CUEP reference missing arrays: {', '.join(missing)}",
         }
 
@@ -229,6 +237,8 @@ def inspect_spm_cuep_reference(path: Path) -> dict:
             "comparable": False,
             "network_residual": float("inf"),
             "raw_network_residual": float("inf"),
+            "corrected_raw_network_residual": float("nan"),
+            "corrected_raw_e_critical": float("nan"),
             "reason": "CUEP reference shapes or values are incompatible with 3M9B",
         }
 
@@ -237,6 +247,7 @@ def inspect_spm_cuep_reference(path: Path) -> dict:
     ))
     raw_residual = float("nan")
     corrected_raw_residual = float("nan")
+    corrected_raw_e_critical = float("nan")
     raw_theta = arrays.get("cuep_raw_net_theta")
     if raw_theta is not None:
         raw_theta = np.asarray(raw_theta, dtype=float).reshape(-1)
@@ -256,6 +267,30 @@ def inspect_spm_cuep_reference(path: Path) -> dict:
                     spm_network_residual(np.r_[corrected_theta, voltage],
                                           delta, yfull, preset.epu)
                 ))
+                # Recompute the physical energy in the same postfault SPM
+                # frame.  The compact reference's projected fields are kept
+                # for historical traceability, but are never used as an
+                # energy target after the raw fsolve angle is corrected.
+                sep_gen = np.asarray(static.postfault.sep_delta, dtype=float).reshape(-1)
+                sep_state, sep_ok, _ = solve_spm_network(
+                    sep_gen, yfull, np.asarray(preset.epu, dtype=float), tol=1e-12
+                )
+                if sep_ok:
+                    sep_theta = np.asarray(sep_state[:nnet], dtype=float)
+                    sep_voltage = np.asarray(sep_state[nnet:], dtype=float)
+                    energies = spm_potential_energy(
+                        preset,
+                        static.postfault,
+                        yfull,
+                        sep_gen,
+                        sep_theta,
+                        sep_voltage,
+                        delta,
+                        corrected_theta,
+                        voltage,
+                    )
+                    if np.all(np.isfinite(energies)) and np.all(voltage > 1e-4):
+                        corrected_raw_e_critical = float(np.sum(energies))
     comparable = bool(residual < 1e-6 and np.all(voltage > 1e-4))
     reason = "" if comparable else (
         f"MATLAB CUEP network residual={residual:.6g}; "
@@ -266,6 +301,7 @@ def inspect_spm_cuep_reference(path: Path) -> dict:
         "network_residual": residual,
         "raw_network_residual": raw_residual,
         "corrected_raw_network_residual": corrected_raw_residual,
+        "corrected_raw_e_critical": corrected_raw_e_critical,
         "reason": reason,
     }
 
@@ -352,6 +388,12 @@ def verify_spm_cct() -> dict:
         limitations.append(
             f"raw fsolve 网络角加回记录的 COI 平移后残差={corrected_raw:.6g}；"
             "该物理坐标诊断值不替代 projected 参考字段"
+        )
+    corrected_energy = cuep_diagnostics.get("corrected_raw_e_critical")
+    if np.isfinite(corrected_energy):
+        limitations.append(
+            f"raw fsolve 坐标修正后的物理 E_critical={corrected_energy:.6g}；"
+            "仅作物理诊断，不作为历史 projected 回归目标"
         )
     if np.isfinite(reference_data.get("arrays", {}).get("e_critical", np.nan)):
         limitations.append(
