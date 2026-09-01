@@ -110,18 +110,18 @@ def _run_case(case: Case) -> dict:
         row["reduced_lea_cct"] = float(reduced["lea"].cct)
         row["reduced_rea_cct"] = float(reduced["rea_cct"])
         row["spm_e_critical"] = finite_or_none(spm.cuep.e_critical)
-        row["spm_lea_cct"] = finite_or_none(spm.cct) if spm.found else None
+        row["spm_lea_cct"] = finite_or_none(spm.cct) if spm.converged else None
         row["equilibrium_residual"] = finite_or_none(spm.cuep.equilibrium_residual)
         row["network_residual"] = finite_or_none(spm.cuep.network_residual)
         row["cuep_branch_id"] = getattr(spm.cuep, "equilibrium_type", None)
-        row["flag_cct"] = bool(spm.found)
-        row["convergence_status"] = "PASSED" if spm.found else "UNVERIFIED"
+        row["flag_cct"] = bool(spm.converged)
+        row["convergence_status"] = "PASSED" if spm.converged else "UNVERIFIED"
         if row["reduced_lea_cct"] is not None and row["reduced_rea_cct"] is not None:
             row["lea_rea_error_ms"] = 1000.0 * (row["reduced_lea_cct"] - row["reduced_rea_cct"])
             row["lea_rea_error_pct"] = 100.0 * (row["reduced_lea_cct"] - row["reduced_rea_cct"]) / max(abs(row["reduced_rea_cct"]), 1e-15)
         if row["spm_lea_cct"] is not None and row["reduced_lea_cct"] is not None:
             row["cross_model_gap_ms"] = 1000.0 * (row["spm_lea_cct"] - row["reduced_lea_cct"])
-        if not spm.found:
+        if not spm.converged:
             row["failure_reason"] = spm.exit_reason or "SPM self-contained CCT unavailable"
     except Exception as exc:  # noqa: BLE001
         row["failure_reason"] = f"{type(exc).__name__}: {exc}"
