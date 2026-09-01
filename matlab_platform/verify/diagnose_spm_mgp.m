@@ -28,8 +28,11 @@ if report.source_file_exists
 end
 
 report.branch_executed = evalin('base', 'exist(''MGP'', ''var'') == 1');
+report.escape = local_field_snapshot('escape', {'tm','deltac','omegac', ...
+    'omega','theta','voltage','Dotproduct'});
 report.mgp = local_field_snapshot('MGP', {'detac_MGP','theta_MGP', ...
     'voltage_MGP','num_Traj','flag_MGP'});
+report.mgp_norms = local_workspace_snapshot({'Normtt','norm_min'});
 report.cuep = local_field_snapshot('postfault', {'CUEP_delta', ...
     'CUEP_omegapu','CUEP_net_theta','CUEP_net_voltage','CUEP_Perr'});
 report.fsolve = local_workspace_snapshot({'x_init','Results_fsolve'});
@@ -38,7 +41,8 @@ report.notes = { ...
     '只读诊断：不修改 B3_MM 或 Fun_Cal_MGP_SPM.m。', ...
     '疑似复制错误行只记录是否存在，不据此直接认定 MATLAB 缺陷。', ...
     '若变量未保留在 base workspace，则对应字段为 unavailable。', ...
-    'physical_cuep 使用 Results_fsolve 的原始网络角减去实际 CUEP COI 平移，单独评估正确 SPM 网络残差与势能。'};
+    'physical_cuep 使用 Results_fsolve 的原始网络角减去实际 CUEP COI 平移，单独评估正确 SPM 网络残差与势能。', ...
+    '同时记录 base workspace 的 deltacoi，用于识别脚本中未限定变量名造成的坐标混用。'};
 
 parent = fileparts(outputFile);
 if ~isempty(parent) && ~isfolder(parent)
@@ -72,6 +76,15 @@ try
     voltage = postfault.CUEP_net_voltage(:);
     frame_shift = postfault.deltacoi;
     corrected_theta = raw_theta - frame_shift;
+    stored_theta = [];
+    if isfield(postfault, 'CUEP_net_theta')
+        stored_theta = postfault.CUEP_net_theta(:);
+    end
+    base_shift_available = evalin('base', 'exist(''deltacoi'', ''var'') == 1');
+    base_shift = NaN;
+    if base_shift_available
+        base_shift = evalin('base', 'deltacoi');
+    end
     Y = postfault.Yfull_mod;
     all_theta = [delta; corrected_theta];
     all_voltage = [preset.Epu(:); voltage];
@@ -86,6 +99,13 @@ try
     snapshot.frame_shift = frame_shift;
     snapshot.raw_net_theta = raw_theta;
     snapshot.corrected_net_theta = corrected_theta;
+    snapshot.stored_cuep_net_theta = stored_theta;
+    snapshot.base_deltacoi_available = base_shift_available;
+    snapshot.base_deltacoi = base_shift;
+    if ~isempty(stored_theta) && base_shift_available
+        snapshot.stored_theta_error_vs_base_shift = norm(stored_theta - (raw_theta - base_shift));
+        snapshot.stored_theta_error_vs_postfault_shift = norm(stored_theta - corrected_theta);
+    end
     snapshot.cuep_delta = delta;
     snapshot.cuep_net_voltage = voltage;
     snapshot.network_residual = norm(network_residual);
