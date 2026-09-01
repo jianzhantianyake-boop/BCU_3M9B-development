@@ -112,7 +112,10 @@ def simulate_spm_dae(tlength: float, tunit: float, state, preset, basevalue,
         z = solve_alg(dg)  # 连续法: 约束在每个求值点严格满足
         return spm_generator_rhs(dg, om, state, preset, basevalue, z)
 
-    steps = max(2, int(round(tlength / tunit)))
+    # ``tunit`` is a requested output spacing, so include both endpoints:
+    # N intervals require N+1 samples.  The previous N-sample grid drifted
+    # every checkpoint by one interval over a long fault trajectory.
+    steps = max(2, int(round(tlength / tunit)) + 1)
     t_eval = np.linspace(0.0, tlength, steps)
     sol = solve_ivp(rhs, [0.0, tlength], np.r_[delta0, omega0], method=method,
                     t_eval=t_eval, rtol=rtol, atol=atol, dense_output=False)
@@ -206,3 +209,49 @@ def simulate_spm_trajectory(static, *, clear_time: float = 0.2,
                                phase_labels=labels,
                                converged=bool(fault["success"] and post["success"] and
                                               np.all(np.isfinite(residual))))
+
+
+def select_spm_checkpoints(result: SpmTrajectoryResult, *, clear_time: float,
+                           postfault_time: float, tunit: float) -> list[dict]:
+    """Return fixed, nearest-output SPM checkpoints for cross-validation.
+
+    No interpolation or zero padding is performed.  If a requested time is
+    outside the simulated horizon, the record is marked ``available=False``
+    instead of silently reusing the final state.  The pre-clearing checkpoint
+    is the last output strictly before ``clear_time``; the clearing checkpoint
+    must be exactly at the fault trajectory boundary for a valid comparison.
+    """
+    if clear_time <= 0 or postfault_time <= 0 or tunit <= 0:
+        raise ValueError("clear_time, postfault_time and tunit must be positive")
+    requested = [
+        ("t0", 0.0),
+        ("pre-clearing", max(0.0, clear_time - tunit)),
+        ("clearing", clear_time),
+        ("post-clearing-10ms", clear_time + 0.01),
+        ("post-clearing-50ms", clear_time + 0.05),
+        ("post-clearing-100ms", clear_time + 0.10),
+        ("final", clear_time + postfault_time),
+    ]
+    times = np.asarray(result.time, dtype=float)
+    out: list[dict] = []
+    for label, target in requested:
+        if times.size == 0 or target < times[0] - 1e-12 or target > times[-1] + 1e-12:
+            out.append({"label": label, "requested_time": float(target), "available": False})
+            continue
+        idx = int(np.argmin(np.abs(times - target)))
+        actual = float(times[idx])
+        record = {
+            "label": label,
+            "requested_time": float(target),
+            "actual_time": actual,
+            "index": idx,
+            "available": True,
+            "phase": str(result.phase_labels[idx]),
+            "delta_gen": np.asarray(result.delta_gen[idx], dtype=float).copy(),
+            "omega_gen": np.asarray(result.omega_gen[idx], dtype=float).copy(),
+            "theta_net": np.asarray(result.theta_net[idx], dtype=float).copy(),
+            "voltage_net": np.asarray(result.voltage_net[idx], dtype=float).copy(),
+            "algebraic_residual": float(result.algebraic_residual[idx]),
+        }
+        out.append(record)
+    return out

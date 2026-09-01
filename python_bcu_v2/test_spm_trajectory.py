@@ -8,7 +8,8 @@ import numpy as np
 
 import bcu_v2  # noqa: F401
 from bcu_3m9b import build_static_result
-from bcu_v2.spm_dae import SpmTrajectoryResult, simulate_spm_trajectory
+from bcu_v2.spm_dae import (SpmTrajectoryResult, select_spm_checkpoints,
+                             simulate_spm_trajectory)
 
 
 class SpmTrajectoryTests(unittest.TestCase):
@@ -34,6 +35,26 @@ class SpmTrajectoryTests(unittest.TestCase):
         rad = simulate_spm_trajectory(self.static, clear_time=0.02,
                                       postfault_time=0.02, tunit=0.005, method="Radau")
         self.assertLess(float(np.max(np.abs(rk.delta_gen - rad.delta_gen))), 2e-4)
+
+    def test_fixed_checkpoints_do_not_reuse_out_of_range_state(self):
+        clear_time = 0.03
+        postfault_time = 0.03
+        tunit = 0.005
+        result = simulate_spm_trajectory(self.static, clear_time=clear_time,
+                                         postfault_time=postfault_time, tunit=tunit)
+        checkpoints = select_spm_checkpoints(
+            result, clear_time=clear_time, postfault_time=postfault_time,
+            tunit=tunit,
+        )
+        self.assertEqual([item["label"] for item in checkpoints], [
+            "t0", "pre-clearing", "clearing", "post-clearing-10ms",
+            "post-clearing-50ms", "post-clearing-100ms", "final",
+        ])
+        self.assertTrue(all(item["available"] for item in checkpoints[:4]))
+        self.assertFalse(checkpoints[4]["available"])
+        self.assertFalse(checkpoints[5]["available"])
+        self.assertTrue(checkpoints[6]["available"])
+        self.assertAlmostEqual(checkpoints[2]["actual_time"], clear_time, places=12)
 
 
 if __name__ == "__main__":
