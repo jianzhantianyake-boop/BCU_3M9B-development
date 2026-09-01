@@ -16,6 +16,13 @@ from bcu_v2 import config
 
 
 class DampingStudyTests(unittest.TestCase):
+    def test_gamma_scales_registered_baseline_damping_ratio(self):
+        self.assertEqual(study._allocation_ratios(0.5, "U"), [0.05, 0.05, 0.05])
+        self.assertEqual(study._allocation_ratios(1.0, "U"), [0.1, 0.1, 0.1])
+        self.assertEqual(study._allocation_ratios(1.5, "G2")[0], 0.1)
+        self.assertAlmostEqual(study._allocation_ratios(1.5, "G2")[1], 0.15)
+        self.assertEqual(study._allocation_ratios(1.5, "G2")[2], 0.1)
+
     def test_batch_gate_blocks_without_creating_results(self):
         ok, reasons = study.gate_status()
         self.assertFalse(ok)

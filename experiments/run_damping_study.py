@@ -64,13 +64,14 @@ def _allocation_ratios(gamma: float, allocation: str) -> list[float]:
     silently reinterpret the allocation labels.
     """
 
-    ratios = [0.1, 0.1, 0.1]
+    baseline_ratio = 0.1
+    ratios = [baseline_ratio, baseline_ratio, baseline_ratio]
     if allocation == "U":
-        return [gamma] * 3
+        return [baseline_ratio * gamma] * 3
     index = {"G1": 0, "G2": 1, "G3": 2}.get(allocation)
     if index is None:
         raise ValueError(f"unknown damping allocation: {allocation}")
-    ratios[index] = gamma
+    ratios[index] = baseline_ratio * gamma
     return ratios
 
 
