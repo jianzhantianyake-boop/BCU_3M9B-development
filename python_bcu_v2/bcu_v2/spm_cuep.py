@@ -261,8 +261,15 @@ def solve_spm_cuep(static, mgp: Optional[SpmMgpResult] = None, *,
         network = spm_energy.spm_network_residual(net_u, delta_u, yfull, epu)
         pe_u = spm_energy.spm_generator_power(delta_u, net_u[:nnet], net_u[nnet:], yfull, epu)
         mismatch_u = np.asarray(preset.pmpu, dtype=float) - pe_u
+        # At a common-speed equilibrium the residual power is absorbed by
+        # damping: PCOI = sum(d) * omega_coi.  Expressing the generator
+        # balance directly as mismatch - d*omega avoids the old, incorrect
+        # inertia normalization (which changes the returned speed offset by
+        # a factor of sum(d)/sum(m)).
+        damping = np.asarray(preset.d, dtype=float)
         pcoi_u = float(np.sum(mismatch_u))
-        dyn = mismatch_u - (np.asarray(preset.m, dtype=float) / np.sum(preset.m)) * pcoi_u
+        omega_u = pcoi_u / float(np.sum(damping))
+        dyn = mismatch_u - damping * omega_u
         coi = float(np.dot(np.asarray(preset.m, dtype=float), delta_u))
         return np.r_[network, dyn, coi]
 
@@ -277,18 +284,18 @@ def solve_spm_cuep(static, mgp: Optional[SpmMgpResult] = None, *,
     pe = spm_energy.spm_generator_power(delta_gen, theta_net, voltage_net, yfull, epu)
     mismatch = np.asarray(preset.pmpu, dtype=float) - pe
     pcoi = float(np.sum(mismatch))
-    projected_mismatch = mismatch - (np.asarray(preset.m, dtype=float) /
-                                     np.sum(preset.m)) * pcoi
-    equilibrium_residual = float(np.linalg.norm(projected_mismatch))
+    damping = np.asarray(preset.d, dtype=float)
+    omega_coi = pcoi / float(np.sum(damping))
+    equilibrium_residual = float(np.linalg.norm(mismatch - damping * omega_coi))
     continuity = float(max(np.linalg.norm(np.diff(np.asarray(states), axis=0), axis=1), default=0.0))
     if continuity >= SPM_BRANCH_CONTINUITY_TOL:
-        return SpmCuepResult(delta_gen, theta_net, voltage_net, 0.0,
+        return SpmCuepResult(delta_gen, theta_net, voltage_net, omega_coi,
                              equilibrium_residual, network_residual, continuity, float("nan"),
                              "UNVERIFIED", False,
                              exit_reason=(f"network branch step {continuity:.6g} exceeds "
                                           f"registered tolerance {SPM_BRANCH_CONTINUITY_TOL:g}"))
     if (not joint.success) or network_residual >= residual_tol or equilibrium_residual >= residual_tol:
-        return SpmCuepResult(delta_gen, theta_net, voltage_net, 0.0,
+        return SpmCuepResult(delta_gen, theta_net, voltage_net, omega_coi,
                              equilibrium_residual, network_residual, continuity, float("nan"),
                              "UNVERIFIED", False,
                              exit_reason="joint equilibrium residual exceeds tolerance")
@@ -306,12 +313,12 @@ def solve_spm_cuep(static, mgp: Optional[SpmMgpResult] = None, *,
     ecritical = float(np.sum(ep))
     peak = estimate_spm_fault_energy_peak(static, tfault=0.6, tunit=1e-3)
     if np.isfinite(peak) and ecritical >= peak:
-        return SpmCuepResult(delta_gen, theta_net, voltage_net, pcoi / np.sum(preset.m),
+        return SpmCuepResult(delta_gen, theta_net, voltage_net, omega_coi,
                              equilibrium_residual, network_residual, continuity, ecritical,
                              equilibrium_type, False, used_external_ecritical=False,
                              exit_reason=f"E_critical={ecritical:.6g} exceeds fault energy peak={peak:.6g}",
                              energy_peak=peak)
-    return SpmCuepResult(delta_gen, theta_net, voltage_net, pcoi / np.sum(preset.m),
+    return SpmCuepResult(delta_gen, theta_net, voltage_net, omega_coi,
                          equilibrium_residual, network_residual, continuity, ecritical,
                          equilibrium_type, bool(equilibrium_type.startswith("type-1") and
                                                 ecritical > 0.0),

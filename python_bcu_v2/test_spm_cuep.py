@@ -41,6 +41,16 @@ class SpmCuepTests(unittest.TestCase):
         result = solve_spm_cuep(self.static, mgp)
         self.assertIsInstance(result, SpmCuepResult)
         self.assertFalse(result.used_external_ecritical)
+        if np.isfinite(result.omega_coi) and result.delta_gen.size:
+            theta = result.theta_net
+            voltage = result.voltage_net
+            yfull = np.asarray(self.static.postfault.metadata["yfull_mod"])
+            from bcu_v2.spm_energy import spm_generator_power
+            pe = spm_generator_power(result.delta_gen, theta, voltage,
+                                     yfull, self.static.preset.epu)
+            expected = float(np.sum(self.static.preset.pmpu - pe) /
+                             np.sum(self.static.preset.d))
+            self.assertAlmostEqual(result.omega_coi, expected, places=8)
         if result.converged:
             self.assertTrue(np.isfinite(result.e_critical))
             self.assertLess(result.network_residual, 1e-8)
