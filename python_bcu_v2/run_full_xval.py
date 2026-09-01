@@ -438,6 +438,8 @@ def build_report() -> dict:
             "matlab_xval_full": sum(x["status"] == "MATLAB_XVAL_FULL" for x in entries),
             "matlab_xval_partial": sum(x["status"] == "MATLAB_XVAL_PARTIAL" for x in entries),
             "unverified_or_approximate": sum(x["status"] in {"UNVERIFIED", "APPROXIMATE"} for x in entries),
+            "not_comparable": sum(x["status"] == "NOT_COMPARABLE" for x in entries),
+            "failed": sum(x["status"] == "FAILED" for x in entries),
             "blocked": sum(x["status"] == "BLOCKED" for x in entries),
         },
     }

@@ -31,6 +31,20 @@ def _branch_id(delta: np.ndarray, theta: np.ndarray, voltage: np.ndarray) -> str
     return hashlib.sha256(payload).hexdigest()[:16]
 
 
+def branch_continuity(states: np.ndarray, *, tolerance: float = 1.0) -> tuple[bool, float]:
+    """检查一组连续网络状态是否发生不可接受的分支跳跃。
+
+    返回 ``(ok, max_step)``；空/非有限状态直接失败。该检查同时用于
+    warm-start 诊断和变异测试，不能通过关闭检查来掩盖分支切换。
+    """
+
+    values = np.asarray(states, dtype=float)
+    if values.ndim != 2 or values.shape[0] < 2 or not np.all(np.isfinite(values)):
+        return False, float("inf")
+    max_step = float(np.max(np.linalg.norm(np.diff(values, axis=0), axis=1)))
+    return bool(max_step <= float(tolerance)), max_step
+
+
 def _solve_network_continuous(target_delta: np.ndarray, sep_delta: np.ndarray,
                               yfull: np.ndarray, epu: np.ndarray,
                               sep_state: np.ndarray, *, segments: int = 50):

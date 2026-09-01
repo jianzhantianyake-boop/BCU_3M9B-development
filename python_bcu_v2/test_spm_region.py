@@ -6,7 +6,7 @@ import unittest
 
 import bcu_v2  # noqa: F401
 from bcu_3m9b import build_static_result
-from bcu_v2.spm_region import SpmEquilibrium, enumerate_spm_equilibria
+from bcu_v2.spm_region import SpmEquilibrium, branch_continuity, enumerate_spm_equilibria
 
 
 class SpmRegionTests(unittest.TestCase):
@@ -16,6 +16,17 @@ class SpmRegionTests(unittest.TestCase):
         self.assertTrue(records)
         self.assertTrue(all(isinstance(item, SpmEquilibrium) for item in records))
         self.assertTrue(all(item.branch_id and item.residual_norm < 1e-6 for item in records))
+
+    def test_continuous_network_branch_is_registered(self):
+        records = enumerate_spm_equilibria(build_static_result(), grid_points=21)
+        self.assertTrue(records)
+        type1 = [item for item in records if item.equilibrium_type == "type-1"]
+        self.assertTrue(type1)
+        self.assertLess(type1[0].continuity_error, 1.0)
+        states = __import__("numpy").array([[0.0, 0.0], [0.1, -0.1], [0.2, -0.2]])
+        ok, maximum = branch_continuity(states, tolerance=1.0)
+        self.assertTrue(ok)
+        self.assertGreater(maximum, 0.0)
 
 
 if __name__ == "__main__":

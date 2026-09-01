@@ -12,6 +12,7 @@ from bcu_3m9b.dynamics import reduced_rhs
 from bcu_3m9b.equilibrium import electrical_power
 from bcu_3m9b.network import remove_fault_line
 from bcu_v2 import spm_energy
+from bcu_v2.spm_region import branch_continuity
 
 
 class MutationTests(unittest.TestCase):
@@ -80,7 +81,8 @@ class MutationTests(unittest.TestCase):
 
     def test_branch_continuity_mutation(self):
         states = np.zeros((3, 4)); states[2, 0] = 10.0
-        jump = np.max(np.linalg.norm(np.diff(states, axis=0), axis=1))
+        ok, jump = branch_continuity(states, tolerance=1.0)
+        self.assertFalse(ok)
         self.assertGreater(jump, 1.0)
 
 
