@@ -1,7 +1,39 @@
 {
+  "name": "reduced_region_v1",
   "schema_version": "1.0",
-  "status": "BLOCKED",
-  "reason": "本轮 MATLAB 未启动，尚未导出紧凑参考",
-  "metadata": {"case": "case9_v2", "fault": "F9", "source_matlab_commit": "035f1475fd92e5639ff9b7fb78eb678ed2976e1c", "created_at": "2026-09-01T00:00:00Z"},
-  "arrays": {}
+  "status": "AVAILABLE",
+  "reason": "从只读 MATLAB 紧凑快照提取；未保存完整工作区",
+  "metadata": {
+    "case": "case9_v2",
+    "fault": "F9",
+    "matlab_version": "R2024a (source snapshot metadata)",
+    "source_matlab_commit": "035f1475fd92e5639ff9b7fb78eb678ed2976e1c",
+    "source_file": "baseline_region.mat",
+    "source_file_sha256": "20e10c5ee4707f945d3d995beb390d92b5184f72e9639efa3941d108b6b5adac",
+    "exporter_commit": "working-tree",
+    "created_at": "2026-09-01T14:07:09.371587+00:00"
+  },
+  "evidence": {
+    "checks_passed": 1,
+    "checks_total": 1,
+    "max_error": 4.5e-11,
+    "kind": "historical_cross_validation",
+    "note": "平衡点集合代表性对照；稳定边界曲线未覆盖"
+  },
+  "arrays": {
+    "xeps": [
+      [
+        1.857584069522695,
+        1.997835447515137
+      ],
+      [
+        0.21788453083388948,
+        0.29568998937179636
+      ]
+    ],
+    "flags": [
+      1,
+      0
+    ]
+  }
 }

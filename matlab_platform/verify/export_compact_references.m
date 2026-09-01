@@ -13,12 +13,30 @@ manifest = struct('schema_version', '1.0', 'created_at', datestr(now, 30), ...
 names = {'reduced_cct_v1','reduced_numerical_v1','reduced_region_v1', ...
     'two_machine_3d_v1','two_machine_gfl_v1','spm_cct_v1'};
 for k = 1:numel(names)
-    rec = struct('name', names{k}, 'schema_version', '1.0', ...
-        'status', 'UNVERIFIED', 'reason', '尚未在当前 MATLAB 会话导出该路径的紧凑参考', ...
-        'metadata', struct('case', 'case9_v2', 'fault', 'F9', ...
-        'source_matlab_commit', sourceCommit, 'created_at', datestr(now, 30)), ...
-        'arrays', struct());
-    write_json(fullfile(outputRoot, [names{k} '.json']), rec);
+    referencePath = fullfile(outputRoot, [names{k} '.json']);
+    % Do not destroy a compact reference produced by the dedicated Python
+    % converter.  MATLAB currently exports only SPM; existing AVAILABLE
+    % references for the other paths remain immutable until explicitly
+    % regenerated from their source snapshot.
+    rec = [];
+    if isfile(referencePath)
+        try
+            existing = jsondecode(fileread(referencePath));
+            if isfield(existing, 'status') && strcmp(existing.status, 'AVAILABLE')
+                rec = existing;
+            end
+        catch
+            rec = [];
+        end
+    end
+    if isempty(rec)
+        rec = struct('name', names{k}, 'schema_version', '1.0', ...
+            'status', 'UNVERIFIED', 'reason', '尚未在当前 MATLAB 会话导出该路径的紧凑参考', ...
+            'metadata', struct('case', 'case9_v2', 'fault', 'F9', ...
+            'source_matlab_commit', sourceCommit, 'created_at', datestr(now, 30)), ...
+            'arrays', struct());
+        write_json(referencePath, rec);
+    end
     manifest.entries = [manifest.entries; struct('name', names{k}, ...
         'path', [names{k} '.json'], 'status', rec.status)]; %#ok<AGROW>
 end

@@ -1,7 +1,40 @@
 {
+  "name": "reduced_numerical_v1",
   "schema_version": "1.0",
-  "status": "BLOCKED",
-  "reason": "本轮 MATLAB 未启动，尚未导出紧凑参考",
-  "metadata": {"case": "case9_v2", "fault": "F9", "source_matlab_commit": "035f1475fd92e5639ff9b7fb78eb678ed2976e1c", "created_at": "2026-09-01T00:00:00Z"},
-  "arrays": {}
+  "status": "AVAILABLE",
+  "reason": "从只读 MATLAB 紧凑快照提取；未保存完整工作区",
+  "metadata": {
+    "case": "case9_v2",
+    "fault": "F9",
+    "matlab_version": "R2024a (source snapshot metadata)",
+    "source_matlab_commit": "035f1475fd92e5639ff9b7fb78eb678ed2976e1c",
+    "source_file": "baseline_numerical.mat",
+    "source_file_sha256": "1e190e13453bccd0e92cc466bc27e329094a886b353a02d8af86488a0e4fe607",
+    "exporter_commit": "working-tree",
+    "created_at": "2026-09-01T14:07:09.371587+00:00"
+  },
+  "evidence": {
+    "checks_passed": 1,
+    "checks_total": 1,
+    "max_error": 1.2e-11,
+    "kind": "historical_cross_validation",
+    "note": "故障段末端 thetac 代表性检查点"
+  },
+  "arrays": {
+    "theta_end": [
+      2.475019737952051,
+      3.144365703282334,
+      4.2689139572624795
+    ],
+    "omega_end": [
+      377.53892061645064,
+      380.9998484296035,
+      390.9474707694231
+    ],
+    "thetac_end": [
+      -0.29338694601024207,
+      0.3759590193200406,
+      1.5005072733001863
+    ]
+  }
 }

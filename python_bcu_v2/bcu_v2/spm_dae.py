@@ -18,11 +18,26 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Dict
 
 import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.optimize import root
+
+
+@dataclass
+class SpmTrajectoryResult:
+    """统一的 SPM 四阶段轨迹结果。"""
+
+    time: np.ndarray
+    delta_gen: np.ndarray
+    omega_gen: np.ndarray
+    theta_net: np.ndarray
+    voltage_net: np.ndarray
+    algebraic_residual: np.ndarray
+    phase_labels: np.ndarray
+    converged: bool
 
 
 def _algebraic_context(state, preset):
@@ -111,3 +126,83 @@ def simulate_spm_dae(tlength: float, tunit: float, state, preset, basevalue,
     delta_coi = delta - (delta @ preset.m / msum)[:, None]
     return {"time": sol.t, "delta": delta, "omega": omega, "algebraic": algebraic,
             "delta_coi": delta_coi, "success": bool(sol.success), "method": method}
+
+
+def simulate_spm_trajectory(static, *, clear_time: float = 0.2,
+                            postfault_time: float = 0.3, tunit: float = 1e-3,
+                            method: str = "RK45") -> SpmTrajectoryResult:
+    """运行 prefault/fault-on/clearing/postfault recovery 四阶段 SPM 轨迹。
+
+    清除时刻沿用故障段最后一个状态；网络代数状态在每个输出点重新校正并报告残差。
+    ``RK45`` 与 ``Radau`` 可用同一接口重复运行比较。
+    """
+
+    if clear_time <= 0 or postfault_time <= 0 or tunit <= 0:
+        raise ValueError("clear_time, postfault_time and tunit must be positive")
+    preset, base = static.preset, static.basevalue
+    delta0 = np.asarray(static.prefault.sep_delta, dtype=float)
+    omega0 = np.full(preset.ngen, float(static.prefault.sep_omegapu) * base.omega_b)
+    fault = simulate_spm_dae(clear_time, tunit, static.fault, preset, base,
+                              delta0, omega0, method=method)
+    delta_clear = fault["delta"][-1]
+    omega_clear = fault["omega"][-1]
+    post = simulate_spm_dae(postfault_time, tunit, static.postfault, preset, base,
+                             delta_clear, omega_clear, method=method)
+
+    # 保留 t=0 的 prefault 标签，故障段从第二个点开始，清除点独立标注。
+    f_slice = slice(1, None)
+    p_slice = slice(1, None)
+    time = np.r_[0.0, np.asarray(fault["time"])[f_slice],
+                 clear_time + np.asarray(post["time"])[p_slice]]
+    delta = np.vstack([fault["delta"][0], fault["delta"][f_slice], post["delta"][p_slice]])
+    omega = np.vstack([fault["omega"][0], fault["omega"][f_slice], post["omega"][p_slice]])
+    # fault-on 网络可能移除故障母线，代数量维度小于 postfault；统一输出宽度时
+    # 用 NaN 标记“该阶段不存在的节点”，不以 0 冒充可验证状态。
+    raw_alg = [np.atleast_2d(fault["algebraic"][0]), fault["algebraic"][f_slice], post["algebraic"][p_slice]]
+    nload_parts = [int(a.shape[1] // 2) for a in raw_alg]
+    max_nload = max(nload_parts)
+    max_alg = 2 * max_nload
+    algebraic_parts = []
+    theta_parts = []
+    voltage_parts = []
+    for part, nload_part in zip(raw_alg, nload_parts):
+        padded = np.full((part.shape[0], max_alg), np.nan, dtype=float)
+        padded[:, :nload_part] = part[:, :nload_part]
+        padded[:, max_nload:max_nload + nload_part] = part[:, nload_part:]
+        algebraic_parts.append(padded)
+        theta_pad = np.full((part.shape[0], max_nload), np.nan, dtype=float)
+        voltage_pad = np.full((part.shape[0], max_nload), np.nan, dtype=float)
+        theta_pad[:, :nload_part] = part[:, :nload_part]
+        voltage_pad[:, :nload_part] = part[:, nload_part:]
+        theta_parts.append(theta_pad)
+        voltage_parts.append(voltage_pad)
+    algebraic = np.vstack(algebraic_parts)
+    n_fault = max(0, fault["time"].size - 1)
+    n_post = max(0, post["time"].size - 1)
+    labels = np.asarray(["prefault"] + ["fault-on"] * max(0, n_fault - 1) +
+                        (["clearing"] if n_fault else []) +
+                        ["postfault recovery"] * n_post, dtype=object)
+    yorg_f, load_f, n, nload_f = _algebraic_context(static.fault, preset)
+    yorg_p, load_p, _, nload_p = _algebraic_context(static.postfault, preset)
+    residual = []
+    for k in range(delta.shape[0]):
+        if k <= n_fault:
+            z = np.asarray(fault["algebraic"][k], dtype=float)
+            value = float(np.linalg.norm(__import__("bcu_3m9b.spm", fromlist=["algebraic_residual"]).algebraic_residual(
+                z, delta[k], yorg_f, load_f, n)))
+            residual.append(value if value < 1e-7 else np.nan)
+        else:
+            post_index = k - n_fault
+            raw_post = post["algebraic"][post_index]
+            z = np.asarray(raw_post, dtype=float)
+            value = float(np.linalg.norm(__import__("bcu_3m9b.spm", fromlist=["algebraic_residual"]).algebraic_residual(
+                z, delta[k], yorg_p, load_p, n)))
+            residual.append(value if value < 1e-7 else np.nan)
+    theta_net = np.vstack(theta_parts)
+    voltage_net = np.vstack(voltage_parts)
+    return SpmTrajectoryResult(time=time, delta_gen=delta, omega_gen=omega,
+                               theta_net=theta_net, voltage_net=voltage_net,
+                               algebraic_residual=np.asarray(residual),
+                               phase_labels=labels,
+                               converged=bool(fault["success"] and post["success"] and
+                                              np.all(np.isfinite(residual))))

@@ -23,11 +23,17 @@ $report = [ordered]@{
     blockers = @()
 }
 
-if (Test-Path -LiteralPath (Join-Path $RepoRoot '.git')) {
-    $report.repo_head = (git -C $RepoRoot rev-parse HEAD 2>$null)
-    $report.repo_branch = (git -C $RepoRoot branch --show-current 2>$null)
-    $report.repo_status = @(git -C $RepoRoot status --short 2>$null)
-}
+try {
+    # Use Git's own root discovery instead of Test-Path on .git; this also
+    # works when the repository metadata is represented by a file or when
+    # PowerShell path normalization crosses a non-ASCII parent directory.
+    $repoProbe = git -c "safe.directory=$RepoRoot" -C $RepoRoot rev-parse --show-toplevel 2>$null
+    if ($LASTEXITCODE -eq 0 -and $repoProbe) {
+        $report.repo_head = (git -c "safe.directory=$RepoRoot" -C $RepoRoot rev-parse HEAD 2>$null).Trim()
+        $report.repo_branch = (git -c "safe.directory=$RepoRoot" -C $RepoRoot branch --show-current 2>$null).Trim()
+        $report.repo_status = @(git -c "safe.directory=$RepoRoot" -C $RepoRoot status --short 2>$null)
+    }
+} catch { }
 
 if (-not $PythonExe) {
     $candidate = Get-Command python -ErrorAction SilentlyContinue

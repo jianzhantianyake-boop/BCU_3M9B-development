@@ -1,7 +1,41 @@
 {
+  "name": "two_machine_3d_v1",
   "schema_version": "1.0",
-  "status": "BLOCKED",
-  "reason": "本轮 MATLAB 未启动，尚未导出紧凑参考",
-  "metadata": {"case": "case9_v2", "fault": "F9", "source_matlab_commit": "035f1475fd92e5639ff9b7fb78eb678ed2976e1c", "created_at": "2026-09-01T00:00:00Z"},
-  "arrays": {}
+  "status": "AVAILABLE",
+  "reason": "从只读 MATLAB 紧凑快照提取；未保存完整工作区",
+  "metadata": {
+    "case": "two_machine_reference",
+    "fault": "not_applicable",
+    "matlab_version": "R2024a (source snapshot metadata)",
+    "source_matlab_commit": "035f1475fd92e5639ff9b7fb78eb678ed2976e1c",
+    "source_file": "baseline_twomachine.mat",
+    "source_file_sha256": "ca8725296830337370d82cb411927c44cd07879208588e65399eabfce9e07860",
+    "exporter_commit": "working-tree",
+    "created_at": "2026-09-01T14:07:09.371587+00:00"
+  },
+  "evidence": {
+    "checks_passed": 1,
+    "checks_total": 1,
+    "max_error": 6.2e-13,
+    "kind": "historical_cross_validation",
+    "note": "平衡点集合对照，D2 参数按 0.5"
+  },
+  "arrays": {
+    "xeps": [
+      [
+        1.04971771253175,
+        0.0,
+        -0.4883247873880206
+      ],
+      [
+        2.202494782474876,
+        0.0,
+        1.5653528431243466
+      ]
+    ],
+    "flags": [
+      0,
+      1
+    ]
+  }
 }
