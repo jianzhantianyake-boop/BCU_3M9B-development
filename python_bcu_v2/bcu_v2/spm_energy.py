@@ -14,10 +14,11 @@
     - spm_fault_energy_cct: 沿实际 fault-network DAE 轨迹逐点算 Ek+Ep，首次越过临界能量即 LEA CCT；
       旧的 E_crit=3.3757 -> 0.2053 仅是历史代理流程，不代表当前严格 DAE 结果。
 
-⚠️ 未自足闭环(明确的下一里程碑): 独立求 SPM CUEP 网络态需选对物理分支——SPM 网络方程在 CUEP
+⚠️ 未自足闭环(当前开发里程碑): 独立求 SPM CUEP 网络态需选对物理分支——SPM 网络方程在 CUEP
 发电机角处有 11+ 个解, MATLAB 靠 MGP(Fun_Cal_MGP_SPM/AEiteration_SPM)沿物理轨迹连续跟踪播种。
-这是与 v1 find_mgp 同源的数值分支难题, 尚未移植稳健的 SPM 版 controlling-UEP。因此 energy CCT 目前
-需外部传入 E_critical(如 3.3757)。物理约束: 正确的 E_crit 须 < 故障能量峰值；按 MATLAB
+Python 已移植严格 SPM 逃逸种子、全网络梯度、MATLAB 同源 Newton 校正和 Ep4 射线积分，
+但默认案例的 MGP/CUEP 仍未通过物理能量门禁。因此 energy CCT 目前
+仍需调用者显式传入 E_critical，不能把历史值写成自足结果。物理约束: 正确的 E_crit 须 < 故障能量峰值；按 MATLAB
 登记的 0.5 s 故障窗口、并对每个发电机角重解故障后网络时，默认案例峰值约为 5.56767。
 旧实现把故障网络零占位直接带入能量函数，曾得到 4.64941；该值不再作为物理证据。若
 临界能量不低于正确峰值，能量法就给不出有限 CCT。
@@ -101,6 +102,89 @@ def solve_spm_network(delta_gen: np.ndarray, yfull: np.ndarray, epu: np.ndarray,
     return sol.x, bool(sol.success and r < 1e-6 and physical_voltage), r
 
 
+def solve_spm_network_newton(delta_gen: np.ndarray, yfull: np.ndarray,
+                             epu: np.ndarray, guess: Optional[np.ndarray] = None,
+                             sload_pq=None, tol: float = 1e-12,
+                             max_iter: int = 10000,
+                             voltage_min: float = 1e-4) -> Tuple[np.ndarray, bool, float]:
+    """MATLAB ``Fun_AEiteration_SPM`` 同源的解析雅可比 Newton 校正器。
+
+    ``solve_spm_network`` 保留 SciPy ``hybr`` 接口供一般求根和历史回归；
+    MGP 射线需要逐步 warm-start，容易被 Newton 的信赖域跳到零电压根，
+    因而提供这个严格按 MATLAB 更新顺序的专用校正器。返回值接口与
+    ``solve_spm_network`` 一致，失败时保留最后迭代状态并返回 ``False``。
+    """
+
+    delta_gen = np.asarray(delta_gen, dtype=float).reshape(-1)
+    yfull = np.asarray(yfull, dtype=complex)
+    epu = np.asarray(epu, dtype=float).reshape(delta_gen.size)
+    ngen = int(delta_gen.size)
+    nbus = int(yfull.shape[0])
+    nnet = nbus - ngen
+    if nnet <= 0:
+        raise ValueError("SPM network must contain at least one algebraic bus")
+    if guess is None:
+        x = np.r_[np.zeros(nnet), np.ones(nnet)]
+    else:
+        x = np.asarray(guess, dtype=float).reshape(-1).copy()
+        if x.size != 2 * nnet:
+            raise ValueError("network guess has incompatible width")
+    G, B = yfull.real, yfull.imag
+    load = None if sload_pq is None else np.asarray(sload_pq, dtype=float)
+    if load is not None and load.shape != (nnet, 2):
+        raise ValueError("sload_pq must have shape (nnet, 2)")
+    err = float("inf")
+    for _ in range(max(1, int(max_iter))):
+        dn, vn = x[:nnet], x[nnet:]
+        r = spm_network_residual(x, delta_gen, yfull, epu, load)
+        err = float(np.max(np.abs(r)))
+        if err < tol:
+            physical = bool(np.all(np.isfinite(vn)) and np.all(vn > voltage_min))
+            return x, bool(physical), err
+        j11 = np.zeros((nnet, nnet), dtype=float)
+        j12 = np.zeros((nnet, nnet), dtype=float)
+        j21 = np.zeros((nnet, nnet), dtype=float)
+        j22 = np.zeros((nnet, nnet), dtype=float)
+        # The following terms intentionally mirror Fun_AEiteration_SPM.m,
+        # including ordered network pairs and the residual sign convention.
+        for i in range(nnet):
+            j12[i, i] = 2.0 * vn[i] * G[i + ngen, i + ngen]
+            j22[i, i] = -2.0 * vn[i] * B[i + ngen, i + ngen]
+            for j in range(ngen):
+                dd = dn[i] - delta_gen[j]
+                j11[i, i] += vn[i] * epu[j] * (B[i + ngen, j] * np.cos(dd)
+                                                - G[i + ngen, j] * np.sin(dd))
+                j12[i, i] += epu[j] * (B[i + ngen, j] * np.sin(dd)
+                                       + G[i + ngen, j] * np.cos(dd))
+                j21[i, i] += vn[i] * epu[j] * (B[i + ngen, j] * np.sin(dd)
+                                                + G[i + ngen, j] * np.cos(dd))
+                j22[i, i] += -epu[j] * B[i + ngen, j] * np.cos(dd)
+                j22[i, i] += epu[j] * G[i + ngen, j] * np.sin(dd)
+            for j in range(nnet):
+                if i == j:
+                    continue
+                dd = dn[i] - dn[j]
+                gij, bij = G[i + ngen, j + ngen], B[i + ngen, j + ngen]
+                j11[i, i] += vn[i] * vn[j] * (bij * np.cos(dd) - gij * np.sin(dd))
+                j11[i, j] = -vn[i] * vn[j] * bij * np.cos(dd) + vn[i] * vn[j] * gij * np.sin(dd)
+                j12[i, i] += vn[j] * (bij * np.sin(dd) + gij * np.cos(dd))
+                j12[i, j] = vn[i] * (bij * np.sin(dd) + gij * np.cos(dd))
+                j21[i, i] += vn[i] * vn[j] * (bij * np.sin(dd) + gij * np.cos(dd))
+                j21[i, j] = -vn[i] * vn[j] * (bij * np.sin(dd) + gij * np.cos(dd))
+                j22[i, i] += -vn[j] * bij * np.cos(dd) + vn[j] * gij * np.sin(dd)
+                j22[i, j] = -vn[i] * bij * np.cos(dd) + vn[i] * gij * np.sin(dd)
+        jac = np.block([[j11, j12], [j21, j22]])
+        try:
+            dx = np.linalg.solve(jac, -r)
+        except np.linalg.LinAlgError:
+            return x, False, err
+        if not np.all(np.isfinite(dx)):
+            return x, False, err
+        x = x + dx
+    physical = bool(np.all(np.isfinite(x[nnet:])) and np.all(x[nnet:] > voltage_min))
+    return x, bool(physical and err < tol), err
+
+
 # ------------------------- 发电机电磁功率(经 Yfull_mod) -------------------------
 
 def spm_generator_power(delta_gen: np.ndarray, delta_net: np.ndarray, v_net: np.ndarray,
@@ -124,13 +208,91 @@ def spm_generator_power(delta_gen: np.ndarray, delta_net: np.ndarray, v_net: np.
 
 # ------------------------- SPM 势能(5 项) -------------------------
 
+def _spm_path_energy_trapezoid(preset, yfull: np.ndarray,
+                               sep_gen: np.ndarray, sep_theta: np.ndarray,
+                               sep_v: np.ndarray, end_gen: np.ndarray,
+                               end_theta: np.ndarray, end_v: np.ndarray,
+                               segments: int) -> float:
+    """MATLAB ``Fun_Cal_PotentialEnergy_SPM`` 的 Ep4 多段梯形积分。
+
+    ``segments`` 对应 MATLAB 的 ``PathEnergyCal``。该项只用于 MGP 射线的
+    路径势能；CUEP 临界能量仍按 MATLAB CCT 脚本的 ``PathEnergyCal=0``
+    计算，因此默认值保持为零。
+    """
+
+    if segments <= 0:
+        return 0.0
+    ngen = int(np.asarray(preset.m).size)
+    nnet = int(np.asarray(yfull).shape[0]) - ngen
+    G = np.asarray(yfull, dtype=complex).real
+    E = np.asarray(epu_of(preset), dtype=float)
+    sg = np.asarray(sep_gen, dtype=float).reshape(ngen)
+    st = np.asarray(sep_theta, dtype=float).reshape(nnet)
+    sv = np.asarray(sep_v, dtype=float).reshape(nnet)
+    eg = np.asarray(end_gen, dtype=float).reshape(ngen)
+    et = np.asarray(end_theta, dtype=float).reshape(nnet)
+    ev = np.asarray(end_v, dtype=float).reshape(nnet)
+    du_g = (eg - sg) / float(segments)
+    du_t = (et - st) / float(segments)
+    du_v = (ev - sv) / float(segments)
+    # Vectorized over buses; this is algebraically identical to the ordered
+    # MATLAB loops but avoids a Python-level 20-segment x 5000-point bottleneck
+    # during MGP ray scans.
+    ggg = G[:ngen, :ngen]
+    ggn = G[:ngen, ngen:]
+    gng = G[ngen:, :ngen]
+    gnn = G[ngen:, ngen:]
+    gen_mask = ~np.eye(ngen, dtype=bool)
+    net_mask = ~np.eye(nnet, dtype=bool)
+    ep4 = 0.0
+    for k in range(segments):
+        sg0, sg1 = sg + k * du_g, sg + (k + 1) * du_g
+        st0, st1 = st + k * du_t, st + (k + 1) * du_t
+        sv0, sv1 = sv + k * du_v, sv + (k + 1) * du_v
+        # Generator-generator P-loss terms (ordered pairs).
+        c0 = np.cos(sg0[:, None] - sg0[None, :])
+        c1 = np.cos(sg1[:, None] - sg1[None, :])
+        ep4 += 0.5 * np.sum((E[:, None] * E[None, :] * ggg
+                              * du_g[:, None] * (c0 + c1))[gen_mask])
+        # Generator-network P-loss terms.
+        c0 = np.cos(sg0[:, None] - st0[None, :])
+        c1 = np.cos(sg1[:, None] - st1[None, :])
+        ep4 += 0.5 * np.sum(E[:, None] * ggn * du_g[:, None]
+                             * (sv0[None, :] * c0 + sv1[None, :] * c1))
+        # Network-generator P-loss terms.
+        c0 = np.cos(st0[:, None] - sg0[None, :])
+        c1 = np.cos(st1[:, None] - sg1[None, :])
+        ep4 += 0.5 * np.sum(E[None, :] * gng * du_t[:, None]
+                             * (sv0[:, None] * c0 + sv1[:, None] * c1))
+        # Network-network P-loss terms (ordered pairs).
+        c0 = np.cos(st0[:, None] - st0[None, :])
+        c1 = np.cos(st1[:, None] - st1[None, :])
+        ep4 += 0.5 * np.sum((gnn * du_t[:, None]
+                              * (sv0[:, None] * sv0[None, :] * c0
+                                 + sv1[:, None] * sv1[None, :] * c1))[net_mask])
+        # Q/V network-generator terms.
+        s0 = np.sin(st0[:, None] - sg0[None, :])
+        s1 = np.sin(st1[:, None] - sg1[None, :])
+        ep4 += 0.5 * np.sum(E[None, :] * gng * du_v[:, None] * (s0 + s1))
+        # Q/V network-network terms.
+        s0 = np.sin(st0[:, None] - st0[None, :])
+        s1 = np.sin(st1[:, None] - st1[None, :])
+        ep4 += 0.5 * np.sum((gnn * du_v[:, None]
+                              * (sv0[None, :] * s0 + sv1[None, :] * s1))[net_mask])
+    return float(ep4)
+
+
 def spm_potential_energy(preset, postfault, yfull, sep_gen, sep_net_theta, sep_net_v,
-                         end_gen, end_net_theta, end_net_v, sload_full=None) -> np.ndarray:
-    """SPM 势能 5 项 [Ep1..Ep5](复现 Fun_Cal_PotentialEnergy_SPM, path_energy_cal=0 时 Ep4=0)。
+                         end_gen, end_net_theta, end_net_v, sload_full=None,
+                         *, path_energy_cal: int | None = None) -> np.ndarray:
+    """SPM 势能 5 项 [Ep1..Ep5]。
 
     使用方法:
         传入 SEP 与末端(通常 CUEP)的发电机角/网络角/网络电压, 返回 [Ep1,Ep2,Ep3,Ep4,Ep5];
         临界能量 = 之和。sload_full(可选)=每网络母线 [P,Q](恒阻抗时全 0, Ep5=0)。
+        ``path_energy_cal`` 为正整数时启用 MATLAB 同源的 Ep4 多段梯形路径积分；
+        ``0`` 或 ``-1`` 保持 MATLAB CCT 默认的 Ep4=0。未指定时读取
+        ``preset.path_energy_cal``，而普通 CUEP 计算通常为零。
     """
 
     ngen = int(np.asarray(preset.m).size)
@@ -154,7 +316,12 @@ def spm_potential_energy(preset, postfault, yfull, sep_gen, sep_net_theta, sep_n
                      - sep_net_v[i] * sep_net_v[l] * B[i + ngen, l + ngen] * np.cos(sep_net_theta[i] - sep_net_theta[l]))
     ep3 = float(np.sum([G[i + ngen, i + ngen] / 3 * (end_net_theta[i] - sep_net_theta[i])
                         * (end_net_v[i] ** 2 + end_net_v[i] * sep_net_v[i] + sep_net_v[i] ** 2) for i in range(nnet)]))
-    ep4 = 0.0  # path_energy_cal=0: Ray 近似为 0
+    if path_energy_cal is None:
+        path_energy_cal = int(getattr(preset, "path_energy_cal", 0))
+    ep4 = _spm_path_energy_trapezoid(
+        preset, yfull, sep_gen, sep_net_theta, sep_net_v,
+        end_gen, end_net_theta, end_net_v, int(path_energy_cal),
+    ) if int(path_energy_cal) > 0 else 0.0
     ep5 = 0.0
     if sload_full is not None:
         for i in range(nnet):

@@ -376,7 +376,10 @@ def verify_spm_cct() -> dict:
         from bcu_v2 import config as C
         from bcu_v2.spm_cuep import spm_self_contained_cct
         static = C.build_static_from_config(C.apply_overrides(C.load_config(), {"mode": "spm_cct"}))
-        result = spm_self_contained_cct(static)
+        # Keep the report command bounded while the full MATLAB-sized MGP
+        # search is still under development. A capped run can only leave the
+        # path UNVERIFIED; it is never promoted on a partial trajectory.
+        result = spm_self_contained_cct(static, max_segments=1)
     except Exception as exc:  # noqa: BLE001
         return _entry("spm_cct", "FAILED", ref, limitations=[f"自足求解异常: {exc}"])
     limitations = _spm_frame_limitations(reference_data)

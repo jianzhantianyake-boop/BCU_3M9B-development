@@ -21,7 +21,11 @@ from bcu_v2.spm_cuep import (
     spm_self_contained_cct,
     trace_spm_mgp,
 )
-from bcu_v2.spm_energy import solve_spm_network
+from bcu_v2.spm_energy import (
+    solve_spm_network,
+    solve_spm_network_newton,
+    spm_potential_energy,
+)
 from bcu_v2.spm_cuep import estimate_spm_fault_energy_peak
 
 
@@ -56,7 +60,9 @@ class SpmCuepTests(unittest.TestCase):
             self.assertLess(result.network_residual, 1e-8)
 
     def test_self_contained_result_supports_tuple_unpacking(self):
-        result = spm_self_contained_cct(self.static, tfault=0.05, tunit=0.005)
+        result = spm_self_contained_cct(
+            self.static, tfault=0.05, tunit=0.005, max_segments=1,
+        )
         self.assertIsInstance(result, SpmSelfContainedResult)
         cuep, cct, ok = result
         self.assertIs(cuep, result.cuep)
@@ -77,6 +83,18 @@ class SpmCuepTests(unittest.TestCase):
         self.assertFalse(converged)
         self.assertLess(residual, 1e-8)
 
+    def test_matlab_newton_network_corrector_returns_physical_sep(self):
+        yfull = np.asarray(self.static.postfault.metadata["yfull_mod"])
+        z, converged, residual = solve_spm_network_newton(
+            self.static.postfault.sep_delta,
+            yfull,
+            self.static.preset.epu,
+            tol=1e-12,
+        )
+        self.assertTrue(converged, msg=f"Newton residual={residual:g}")
+        self.assertLess(residual, 1e-10)
+        self.assertTrue(np.all(z[6:] > 1e-4))
+
     def test_fault_energy_peak_uses_spm_dae_trajectory(self):
         """SPM energy must not silently fall back to the reduced trajectory."""
         with patch("bcu_3m9b.dynamics.integrate_reduced",
@@ -93,6 +111,32 @@ class SpmCuepTests(unittest.TestCase):
         )
         self.assertGreater(peak, 5.0)
         self.assertAlmostEqual(peak, 5.5678, delta=0.1)
+
+    def test_path_energy_cal_reproduces_nonzero_ep4_without_changing_cuep_default(self):
+        """MGP ray integration may request MATLAB's Ep4; CUEP default stays zero."""
+        yfull = np.asarray(self.static.postfault.metadata["yfull_mod"])
+        sep = np.asarray(self.static.postfault.sep_delta, dtype=float)
+        sep_z, ok, residual = solve_spm_network(
+            sep, yfull, self.static.preset.epu, tol=1e-12,
+        )
+        self.assertTrue(ok, msg=f"SEP residual={residual:g}")
+        end = sep + np.array([0.05, -0.03, 0.08])
+        end_z, ok, residual = solve_spm_network(
+            end, yfull, self.static.preset.epu, guess=sep_z, tol=1e-12,
+        )
+        self.assertTrue(ok, msg=f"end residual={residual:g}")
+        ep_default = spm_potential_energy(
+            self.static.preset, self.static.postfault, yfull,
+            sep, sep_z[:6], sep_z[6:], end, end_z[:6], end_z[6:],
+        )
+        ep_ray = spm_potential_energy(
+            self.static.preset, self.static.postfault, yfull,
+            sep, sep_z[:6], sep_z[6:], end, end_z[:6], end_z[6:],
+            path_energy_cal=20,
+        )
+        self.assertAlmostEqual(ep_default[3], 0.0, places=12)
+        self.assertTrue(np.isfinite(ep_ray[3]))
+        self.assertGreater(abs(float(ep_ray[3])), 1e-8)
 
 
 if __name__ == "__main__":

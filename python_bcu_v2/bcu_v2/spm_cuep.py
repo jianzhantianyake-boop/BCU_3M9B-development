@@ -90,97 +90,302 @@ def _failure_mgp(static, reason: str, gradient_norm: float = float("nan")) -> Sp
                         float("nan"), float("nan"))
 
 
-def trace_spm_mgp(static, *, segment_dt: float = 1e-3,
-                  segment_steps: int = 10, max_segments: int = 1000,
-                  gradient_tol: float = 1e-5) -> SpmMgpResult:
-    """沿故障轨迹逃逸点和势场梯度做 SPM MGP 连续追踪。
+def _solve_network_continuous(delta_target: np.ndarray, yfull: np.ndarray,
+                              epu: np.ndarray, guess: np.ndarray,
+                              delta_anchor: np.ndarray | None = None,
+                              *, max_angle_step: float = 2e-4,
+                              tol: float = 1e-11) -> tuple[np.ndarray, bool, float]:
+    """Follow one algebraic branch with small angle homotopy steps.
 
-    每个分段先用上一步网络解校正代数方程，再更新 COI 投影后的发电机角。这个追踪器
-    主要负责提供物理 warm-start 和诊断；最终 CUEP 仍需联合求解并经过 type-1 校验。
+    A direct ``hybr`` call can converge to the zero-voltage mathematical root
+    when a ray approaches a fold.  MATLAB's AE Newton receives every 1e-3 ray
+    point sequentially; splitting each Python step into smaller continuation
+    points reproduces that warm-start invariant while retaining a structured
+    failure result.
     """
 
-    from bcu_3m9b.cuep import coi_mismatch
-    from bcu_3m9b.dynamics import find_exitpoint, integrate_reduced
+    target = np.asarray(delta_target, dtype=float).reshape(-1)
+    anchor = target if delta_anchor is None else np.asarray(delta_anchor, dtype=float).reshape(-1)
+    distance = float(np.linalg.norm(target - anchor))
+    count = max(1, int(np.ceil(distance / max(float(max_angle_step), 1e-8))))
+    initial = np.asarray(guess, dtype=float).reshape(-1).copy()
+
+    def run(step: float):
+        n = max(1, int(np.ceil(distance / max(float(step), 1e-8))))
+        current = initial.copy()
+        residual = float("inf")
+        for k in range(1, n + 1):
+            point = anchor + (target - anchor) * (k / n)
+            current, ok, residual = spm_energy.solve_spm_network_newton(
+                point, yfull, epu, guess=current, tol=tol,
+            )
+            if not ok:
+                # Keep a conservative fallback for cases where the analytic
+                # Newton Jacobian is singular, but never accept a nonphysical
+                # voltage root as success.
+                current, ok, residual = spm_energy.solve_spm_network(
+                    point, yfull, epu, guess=current, tol=tol,
+                )
+                if not ok:
+                    return current, False, residual
+        return current, True, residual
+
+    current, ok, residual = run(max_angle_step)
+    if not ok and max_angle_step > 1.1e-4:
+        # Near a voltage fold the 2e-4 default can land on the zero-voltage
+        # root.  Retry the whole short continuation from the original warm
+        # start with half-size steps before declaring the branch unavailable.
+        current, ok, residual = run(max_angle_step / 2.0)
+    return current, ok, residual
+
+
+def _spm_escape_seed(static, *, tfault: float = 0.5,
+                     tunit: float = 1e-4) -> tuple[np.ndarray, np.ndarray, float]:
+    """Find the SPM fault dot-product crossing used by MATLAB MGP."""
+
+    from .spm_dae import remap_algebraic_state, simulate_spm_dae
+
+    preset, post, yfull, epu, ngen, nnet = _context(static)
+    d0 = np.asarray(static.prefault.sep_delta, dtype=float)
+    omega0 = np.full(ngen, float(static.prefault.sep_omegapu) * static.basevalue.omega_b)
+    pref_y = np.asarray(static.prefault.metadata.get("yfull_mod", static.prefault.yfull), dtype=complex)
+    pref_z, pref_ok, pref_residual = spm_energy.solve_spm_network(d0, pref_y, epu)
+    if not pref_ok:
+        raise RuntimeError(f"prefault network residual={pref_residual:g}")
+    fault_guess = remap_algebraic_state(pref_z, static.prefault, static.fault, ngen)
+    traj = simulate_spm_dae(tfault, tunit, static.fault, preset, static.basevalue,
+                            d0, omega0, method="Radau", algebraic_guess=fault_guess)
+    if not traj.get("success", False) or traj["time"].size < 3:
+        raise RuntimeError("strict fault DAE did not converge")
+    sep = _project_coi(np.asarray(post.sep_delta, dtype=float), preset.m)
+    sep_z, sep_ok, sep_residual = spm_energy.solve_spm_network(sep, yfull, epu)
+    if not sep_ok:
+        raise RuntimeError(f"postfault SEP residual={sep_residual:g}")
+    previous = sep_z.copy()
+    dot = np.full(traj["time"].size, np.nan, dtype=float)
+    crossing_index: int | None = None
+    for k, (dg, omega) in enumerate(zip(traj["delta"], traj["omega"])):
+        previous, ok, residual = spm_energy.solve_spm_network(
+            np.asarray(dg, dtype=float), yfull, epu, guess=previous, tol=1e-11,
+        )
+        if not ok:
+            # After the first PEBS crossing the fault trajectory may approach
+            # a low-voltage algebraic branch.  The exit seed is already fixed
+            # by then, so do not let a later nonphysical point erase valid
+            # evidence.
+            if crossing_index is not None:
+                break
+            raise RuntimeError(f"postfault exit-point network residual={residual:g}")
+        pe = spm_energy.spm_generator_power(
+            dg, previous[:nnet], previous[nnet:], yfull, epu,
+        )
+        omega_c = np.asarray(omega, dtype=float) - np.dot(preset.m, omega) / np.sum(preset.m)
+        dot[k] = float(np.dot(np.asarray(preset.pmpu) - pe, omega_c))
+        if k >= 1 and dot[k - 1] < -1e-9 and dot[k] > 1e-9:
+            crossing_index = k - 1
+            break
+    if crossing_index is None:
+        raise RuntimeError("SPM fault dot-product crossing not found")
+    idx = int(crossing_index)
+    dg = _project_coi(np.asarray(traj["delta"][idx], dtype=float), preset.m)
+    z, ok, residual = spm_energy.solve_spm_network(dg, yfull, epu, guess=previous, tol=1e-11)
+    if not ok:
+        raise RuntimeError(f"escape postfault network residual={residual:g}")
+    return dg, z, float(traj["time"][idx])
+
+
+def _spm_gradient(delta: np.ndarray, z: np.ndarray, preset,
+                  yfull: np.ndarray) -> np.ndarray:
+    ngen = int(np.asarray(delta).size)
+    nnet = int(yfull.shape[0]) - ngen
+    pe = spm_energy.spm_generator_power(
+        delta, np.asarray(z)[:nnet], np.asarray(z)[nnet:], yfull,
+        np.asarray(preset.epu, dtype=float),
+    )
+    mismatch = np.asarray(preset.pmpu, dtype=float) - pe
+    m = np.asarray(preset.m, dtype=float)
+    return mismatch - m * np.sum(mismatch) / np.sum(m)
+
+
+def _spm_mgp_trajectory(start_delta: np.ndarray, start_z: np.ndarray,
+                         static, *, dt: float, steps: int,
+                         norm_tol: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, float]:
+    """One MATLAB-compatible ten-point MGP trajectory (RK4 on the DAE manifold)."""
+
+    preset, post, yfull, epu, ngen, nnet = _context(static)
+    m = np.asarray(preset.m, dtype=float)
+    d = np.asarray(start_delta, dtype=float).copy()
+    z = np.asarray(start_z, dtype=float).copy()
+    x = d[1:].copy()
+    ds: list[np.ndarray] = []
+    zs: list[np.ndarray] = []
+    norms: list[float] = []
+    previous_d = d.copy()
+
+    def solve_at(point: np.ndarray, guess: np.ndarray, anchor: np.ndarray) -> np.ndarray:
+        out, ok, residual = _solve_network_continuous(
+            point, yfull, epu, guess, anchor, max_angle_step=1e-3,
+        )
+        if not ok:
+            raise RuntimeError(f"network residual={residual:g}")
+        return out
+
+    for output in range(max(1, int(steps))):
+        dg = _project_coi(np.r_[-np.dot(m[1:], x) / m[0], x], m)
+        z = solve_at(dg, z, previous_d)
+        ds.append(dg.copy())
+        zs.append(z.copy())
+        norms.append(float(np.linalg.norm(_spm_gradient(dg, z, preset, yfull))))
+        previous_d = dg.copy()
+        if output == steps - 1:
+            break
+
+        def rhs(xx: np.ndarray, guess: np.ndarray, anchor: np.ndarray):
+            dd = _project_coi(np.r_[-np.dot(m[1:], xx) / m[0], xx], m)
+            zz = solve_at(dd, guess, anchor)
+            return _spm_gradient(dd, zz, preset, yfull)[1:] / m[1:], zz
+
+        k1, z1 = rhs(x, z, previous_d)
+        k2, z2 = rhs(x + 0.5 * dt * k1, z1, previous_d)
+        k3, z3 = rhs(x + 0.5 * dt * k2, z2, previous_d)
+        k4, z4 = rhs(x + dt * k3, z3, previous_d)
+        x = x + dt * (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0
+        z = z4
+    norms_a = np.asarray(norms, dtype=float)
+    found = -1
+    norm_min = norms_a[0]
+    for k in range(1, norms_a.size):
+        if norms_a[k] < norm_min:
+            norm_min = norms_a[k]
+        if (k >= 2 and norms_a[k] - norms_a[k - 1] > norm_tol
+                and abs(norms_a[k - 1] - norm_min) <= 1e-10
+                and norm_min < 1e-1):
+            found = k - 1
+            break
+    return np.asarray(ds), np.asarray(zs), norms_a, found, float(norm_min)
+
+
+def _spm_ray_update(last_delta: np.ndarray, last_z: np.ndarray, static,
+                    *, ray_step: float = 1e-3,
+                    path_energy_cal: int = 20) -> tuple[np.ndarray, np.ndarray, bool, float]:
+    """Search a MATLAB-style local maximum on the SEP-to-last-point ray."""
+
+    preset, post, yfull, epu, ngen, nnet = _context(static)
+    m = np.asarray(preset.m, dtype=float)
+    sep = _project_coi(np.asarray(post.sep_delta, dtype=float), m)
+    sep_z, ok, residual = spm_energy.solve_spm_network(sep, yfull, epu)
+    if not ok:
+        raise RuntimeError(f"SEP network residual={residual:g}")
+    direction = np.asarray(last_delta, dtype=float) - sep
+    distance = float(np.linalg.norm(direction))
+    if distance < 1e-12:
+        return np.asarray(last_delta), np.asarray(last_z), False, float("nan")
+    direction /= distance
+    max_steps = max(1, int(np.floor(2.0 * distance / ray_step)))
+    prev_d, prev_z = sep.copy(), sep_z.copy()
+    prev_e = float(np.sum(spm_energy.spm_potential_energy(
+        preset, post, yfull, sep, sep_z[:nnet], sep_z[nnet:],
+        sep, sep_z[:nnet], sep_z[nnet:], path_energy_cal=path_energy_cal)))
+    cur_d = sep + ray_step * direction
+    cur_z, ok, residual = _solve_network_continuous(
+        cur_d, yfull, epu, prev_z, prev_d, max_angle_step=1e-3,
+    )
+    if not ok:
+        return np.asarray(last_delta), np.asarray(last_z), False, float("nan")
+    cur_e = float(np.sum(spm_energy.spm_potential_energy(
+        preset, post, yfull, sep, sep_z[:nnet], sep_z[nnet:],
+        cur_d, cur_z[:nnet], cur_z[nnet:], path_energy_cal=path_energy_cal)))
+    values = [prev_e, cur_e]
+    for _ in range(2, max_steps + 1):
+        nxt_d = cur_d + ray_step * direction
+        nxt_z, ok, residual = _solve_network_continuous(
+            nxt_d, yfull, epu, cur_z, cur_d, max_angle_step=1e-3,
+        )
+        if not ok:
+            return np.asarray(last_delta), np.asarray(last_z), False, float("nan")
+        nxt_e = float(np.sum(spm_energy.spm_potential_energy(
+            preset, post, yfull, sep, sep_z[:nnet], sep_z[nnet:],
+            nxt_d, nxt_z[:nnet], nxt_z[nnet:], path_energy_cal=path_energy_cal)))
+        values.append(nxt_e)
+        if values[-2] > values[-3] and values[-2] > values[-1]:
+            return cur_d, cur_z, True, values[-2]
+        prev_d, prev_z, prev_e = cur_d, cur_z, cur_e
+        cur_d, cur_z, cur_e = nxt_d, nxt_z, nxt_e
+    return np.asarray(last_delta), np.asarray(last_z), False, float(values[-1])
+
+
+def trace_spm_mgp(static, *, segment_dt: float = 1e-3,
+                  segment_steps: int = 10, max_segments: int = 1000,
+                  gradient_tol: float = 1e-5,
+                  path_energy_cal: int = 20) -> SpmMgpResult:
+    """按 MATLAB 外层逻辑追踪 SPM MGP，并返回结构化失败原因。"""
 
     preset, post, yfull, epu, ngen, nnet = _context(static)
     if segment_dt <= 0 or segment_steps <= 0 or max_segments <= 0:
         return _failure_mgp(static, "invalid continuation settings")
-
     try:
-        d0 = np.asarray(static.prefault.sep_delta, dtype=float)
-        w0 = np.full(ngen, float(static.prefault.sep_omegapu) * static.basevalue.omega_b)
-        # MATLAB Cal_MM_CCT_SPM integrates the fault trajectory for 0.5 s and
-        # seeds MGP at the first post-fault power/relative-speed dot-product
-        # crossing.  The previous implementation used a short (at most
-        # 0.2 s) horizon and selected the largest mismatch, which is a point
-        # on the pre-escape trajectory and cannot reproduce the MGP update
-        # chain.  Keep the registered MATLAB horizon while allowing callers
-        # to request a longer diagnostic trajectory.
-        horizon = max(0.5, segment_dt * segment_steps * min(max_segments, 20))
-        fault_traj = integrate_reduced(horizon, segment_dt, static.fault, preset,
-                                       static.basevalue, d0, w0)
-        # Use the same sign-change exit criterion as the MATLAB SPM entry
-        # point.  It is deliberately evaluated on the post-fault reduced
-        # network only for the seed; all subsequent network states are solved
-        # on the full SPM branch below.
-        idx = find_exitpoint(fault_traj, post, preset)
-        delta = _project_coi(fault_traj.thetac[idx], preset.m)
+        delta, z, escape_time = _spm_escape_seed(static, tfault=0.5, tunit=1e-4)
     except Exception as exc:  # noqa: BLE001
         return _failure_mgp(static, f"fault escape seed failed: {exc}")
-
     sep = _project_coi(np.asarray(post.sep_delta, dtype=float), preset.m)
-    z, ok, residual = spm_energy.solve_spm_network(sep, yfull, epu)
-    if not ok:
-        return _failure_mgp(static, f"SEP network solve failed: residual={residual:g}")
-
-    # 先把网络状态连续地带到逃逸播种点，再沿梯度系统做有限分段。
-    branch_states = [z.copy()]
-    previous = z.copy()
-    for alpha in np.linspace(0.0, 1.0, max(2, min(32, segment_steps + 1)))[1:]:
-        candidate = _project_coi(sep + alpha * (delta - sep), preset.m)
-        previous, ok, residual = spm_energy.solve_spm_network(candidate, yfull, epu,
-                                                               guess=previous)
-        if not ok or not np.all(np.isfinite(previous)):
-            return _failure_mgp(static, f"network branch continuation failed at alpha={alpha:g}")
-        branch_states.append(previous.copy())
-
-    trajectory_count = 1
-    gradient_norm = float(np.linalg.norm(coi_mismatch(delta, post.yred, preset)))
-    stagnant = 0
-    for _ in range(max_segments):
-        gradient = coi_mismatch(delta, post.yred, preset)
-        gradient_norm = float(np.linalg.norm(gradient))
-        if gradient_norm <= gradient_tol:
-            net = branch_states[-1]
-            return SpmMgpResult(delta, net[:nnet], net[nnet:], gradient_norm,
-                                trajectory_count, "gradient tolerance reached", True,
-                                float(np.linalg.norm(spm_energy.spm_network_residual(
-                                    net, delta, yfull, epu))),
-                                float(max(np.linalg.norm(np.diff(np.asarray(branch_states), axis=0), axis=1), default=0.0)))
-        proposal = _project_coi(delta + segment_dt * gradient, preset.m)
-        net, ok, residual = spm_energy.solve_spm_network(proposal, yfull, epu,
-                                                          guess=branch_states[-1])
-        if not ok:
-            return SpmMgpResult(delta, branch_states[-1][:nnet], branch_states[-1][nnet:],
-                                gradient_norm, trajectory_count, "network correction failed", False,
-                                residual, float("nan"))
-        step = float(np.linalg.norm(proposal - delta))
-        if step < 1e-12:
-            stagnant += 1
-            if stagnant >= 3:
-                return SpmMgpResult(delta, net[:nnet], net[nnet:], gradient_norm,
-                                    trajectory_count, "gradient continuation stagnated", False,
-                                    residual, float("nan"))
-        else:
-            stagnant = 0
-        delta = proposal
-        branch_states.append(net.copy())
-        trajectory_count += 1
-
-    net = branch_states[-1]
+    branch_states: list[np.ndarray] = [z.copy()]
+    trajectory_count = 0
+    gradient_norm = float("nan")
+    last_residual = float("nan")
+    try:
+        for _ in range(int(max_segments)):
+            ds, zs, norms, found, norm_min = _spm_mgp_trajectory(
+                delta, z, static, dt=segment_dt, steps=segment_steps,
+                norm_tol=gradient_tol,
+            )
+            trajectory_count += 1
+            branch_states.extend(list(zs))
+            gradient_norm = float(norms[-1])
+            if found >= 0:
+                mgp_delta, mgp_z = ds[found], zs[found]
+                residual = float(np.linalg.norm(spm_energy.spm_network_residual(
+                    mgp_z, mgp_delta, yfull, epu)))
+                continuity = float(max(np.linalg.norm(np.diff(np.asarray(branch_states), axis=0), axis=1), default=0.0))
+                return SpmMgpResult(
+                    mgp_delta, mgp_z[:nnet], mgp_z[nnet:], float(norms[found]),
+                    trajectory_count, "MGP local minimum reached", True,
+                    residual, continuity,
+                )
+            last_delta, last_z = ds[-1], zs[-1]
+            delta_new, z_new, found_ray, _ = _spm_ray_update(
+                last_delta, last_z, static, path_energy_cal=path_energy_cal,
+            )
+            # MATLAB only applies the repeated-status termination when the
+            # ray updater actually found a local maximum.  A ray with no
+            # local maximum simply seeds the next trajectory at its last
+            # point; conflating the two would stop after trajectory 1.
+            if not found_ray:
+                delta, z = last_delta, last_z
+                continue
+            delta, z = delta_new, z_new
+            shift = float(np.linalg.norm(delta - last_delta))
+            if shift < 1e-3:
+                residual = float(np.linalg.norm(spm_energy.spm_network_residual(
+                    z, delta, yfull, epu)))
+                continuity = float(max(np.linalg.norm(np.diff(np.asarray(branch_states), axis=0), axis=1), default=0.0))
+                return SpmMgpResult(
+                    delta, z[:nnet], z[nnet:], gradient_norm, trajectory_count,
+                    "MGP ray update repeated", True, residual, continuity,
+                )
+            if shift > 0.5 * float(np.linalg.norm(last_delta - sep)):
+                delta, z = last_delta, last_z
+            last_residual = float(np.linalg.norm(spm_energy.spm_network_residual(
+                z, delta, yfull, epu)))
+    except Exception as exc:  # noqa: BLE001
+        return SpmMgpResult(
+            np.asarray(delta), np.asarray(z)[:nnet], np.asarray(z)[nnet:],
+            gradient_norm, trajectory_count, f"MGP continuation failed: {exc}",
+            False, last_residual, float("nan"),
+        )
     continuity = float(max(np.linalg.norm(np.diff(np.asarray(branch_states), axis=0), axis=1), default=0.0))
-    return SpmMgpResult(delta, net[:nnet], net[nnet:], gradient_norm, trajectory_count,
-                        "maximum MGP segments reached", False, residual, continuity)
+    return SpmMgpResult(delta, z[:nnet], z[nnet:], gradient_norm,
+                        trajectory_count, "maximum MGP trajectories reached", False,
+                        last_residual, continuity)
 
 
 def _candidate_delta(static, mgp: Optional[SpmMgpResult]) -> tuple[Optional[np.ndarray], str]:
@@ -332,10 +537,14 @@ def solve_spm_cuep(static, mgp: Optional[SpmMgpResult] = None, *,
 
 
 def spm_self_contained_cct(static, *, tfault: float = 0.6,
-                           tunit: float = 1e-4) -> SpmSelfContainedResult:
+                           tunit: float = 1e-4,
+                           max_segments: int = 1000) -> SpmSelfContainedResult:
     """不读取外部临界能量的 SPM CUEP + LEA CCT。"""
 
-    mgp = trace_spm_mgp(static, segment_dt=max(tunit, 1e-3), segment_steps=10)
+    if max_segments <= 0:
+        raise ValueError("max_segments must be positive")
+    mgp = trace_spm_mgp(static, segment_dt=max(tunit, 1e-3), segment_steps=10,
+                        max_segments=max_segments)
     cuep = solve_spm_cuep(static, mgp)
     if not cuep.converged or not np.isfinite(cuep.e_critical):
         return SpmSelfContainedResult(cuep, float("nan"), False,
