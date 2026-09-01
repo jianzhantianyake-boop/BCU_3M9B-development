@@ -3,10 +3,13 @@ param(
     [string]$PythonExe,
     [string]$MatlabExe,
     [string]$MatpowerRoot,
-    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot)
+    [string]$RepoRoot
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $RepoRoot) {
+    $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+}
 $blocked = $false
 $report = [ordered]@{
     audited_at = (Get-Date).ToUniversalTime().ToString('o')
@@ -24,7 +27,7 @@ $report = [ordered]@{
 }
 
 try {
-    # Use Git's own root discovery instead of Test-Path on .git; this also
+    # Use Git root discovery instead of Test-Path on .git; this also
     # works when the repository metadata is represented by a file or when
     # PowerShell path normalization crosses a non-ASCII parent directory.
     $repoProbe = git -c "safe.directory=$RepoRoot" -C $RepoRoot rev-parse --show-toplevel 2>$null
@@ -48,7 +51,11 @@ if ($PythonExe -and (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
             $report.python.version = $version
             foreach ($pkg in @('numpy','scipy','matplotlib')) {
                 $out = (& $PythonExe -c "import importlib.metadata as m; print(m.version('$pkg'))" 2>&1 | Out-String).Trim()
-                $report.python.packages[$pkg] = if ($LASTEXITCODE -eq 0) { $out } else { $null }
+                if ($LASTEXITCODE -eq 0) {
+                    $report.python.packages[$pkg] = $out
+                } else {
+                    $report.python.packages[$pkg] = $null
+                }
             }
         }
     } catch { $report.python.version = $_.Exception.Message }
@@ -81,7 +88,7 @@ if ($MatpowerRoot) {
     $report.matpower_root = (Resolve-Path -LiteralPath $MatpowerRoot -ErrorAction SilentlyContinue).Path
     if (-not $report.matpower_root) {
         $blocked = $true
-        $report.blockers += 'MATPOWER 路径不存在'
+        $report.blockers += "MATPOWER path missing"
     }
 }
 $report.local_mat_files = @(Get-ChildItem -LiteralPath $RepoRoot -Recurse -File -Filter '*.mat' -ErrorAction SilentlyContinue |

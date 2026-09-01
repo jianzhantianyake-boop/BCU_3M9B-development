@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import unittest
 
+import numpy as np
 import bcu_v2  # noqa: F401
 from bcu_3m9b import build_static_result
-from bcu_v2.spm_region import SpmEquilibrium, branch_continuity, enumerate_spm_equilibria
+from bcu_v2.spm_region import (SpmEquilibrium, branch_continuity,
+                               enumerate_spm_equilibria,
+                               trace_spm_stable_manifold)
 
 
 class SpmRegionTests(unittest.TestCase):
@@ -27,6 +30,18 @@ class SpmRegionTests(unittest.TestCase):
         ok, maximum = branch_continuity(states, tolerance=1.0)
         self.assertTrue(ok)
         self.assertGreater(maximum, 0.0)
+
+    def test_stable_manifold_trace_keeps_algebraic_residual_small(self):
+        static = build_static_result()
+        type1 = [item for item in enumerate_spm_equilibria(static, grid_points=21)
+                 if item.equilibrium_type == "type-1"]
+        self.assertEqual(len(type1), 1)
+        result = trace_spm_stable_manifold(
+            static, type1[0], np.array([-0.4288739686, 0.9033643335]),
+            -1, sample_times=np.array([0.0, 0.01]),
+        )
+        self.assertTrue(result["converged"])
+        self.assertLess(float(np.max(result["residual_norm"])), 1e-6)
 
 
 if __name__ == "__main__":

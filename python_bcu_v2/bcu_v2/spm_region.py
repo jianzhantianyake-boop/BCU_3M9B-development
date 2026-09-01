@@ -1,8 +1,8 @@
 """SPM 平衡点与稳定域抽样接口。
 
 平衡点角度候选沿用 v2 reduced 梯度搜索，再对每个候选求完整 SPM 网络状态；输出包含
-残差、类型和稳定分支 ID，避免只比较点数。区域抽样在 MATLAB 参考可用前保持
-``APPROXIMATE``/``UNVERIFIED`` 标记。
+残差、类型和稳定分支 ID，避免只比较点数。固定稳定流形检查点使用约束切空间积分，
+可与 MATLAB 原生参考逐变量对照；更广泛的清除时间区域抽样仍明确标为 ``APPROXIMATE``。
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import hashlib
 
 import numpy as np
+from scipy.integrate import solve_ivp
 
 from . import spm_energy
 
@@ -134,6 +135,148 @@ def enumerate_spm_equilibria(static, *, grid_points: int = 21,
                                             float(continuity_error)))
     found.sort(key=lambda item: (item.equilibrium_type != "SEP", item.branch_id))
     return found
+
+
+def trace_spm_stable_manifold(static, equilibrium: SpmEquilibrium,
+                              perturb_vector: np.ndarray, sign: float, *,
+                              perturb: float = 1e-2,
+                              sample_times: np.ndarray | None = None,
+                              rtol: float = 1e-10,
+                              atol: float = 1e-12) -> dict:
+    """Trace one stable-manifold branch on the algebraic network manifold.
+
+    MATLAB's ``Statable_Region_SPM`` integrates a stiff DAE backwards from a
+    type-1 UEP.  This implementation keeps the same two reduced generator
+    coordinates but solves the SPM network algebraic equations continuously at
+    every RHS evaluation.  No zero/one cold-start state is used after the
+    initial physical equilibrium branch has been established.
+
+    The returned dictionary is deliberately explicit about convergence and
+    residuals so callers can keep a partial/blocked comparison separate from
+    the equilibrium-point comparison.
+    """
+
+    if equilibrium.equilibrium_type != "type-1":
+        raise ValueError("stable-manifold tracing requires a type-1 equilibrium")
+    if perturb <= 0 or not np.isfinite(perturb):
+        raise ValueError("perturb must be positive and finite")
+    times = np.asarray(sample_times if sample_times is not None
+                       else np.array([0.0, 0.25, 0.5, 0.75, 1.0]), dtype=float)
+    if times.ndim != 1 or times.size < 2 or not np.all(np.isfinite(times)):
+        raise ValueError("sample_times must be a finite one-dimensional array")
+    if np.any(np.diff(times) <= 0):
+        raise ValueError("sample_times must be strictly increasing")
+    vector = np.asarray(perturb_vector, dtype=float).reshape(-1)
+    if vector.size != 2 or not np.all(np.isfinite(vector)):
+        raise ValueError("perturb_vector must contain two finite values")
+    norm = float(np.linalg.norm(vector))
+    if norm == 0:
+        raise ValueError("perturb_vector must be nonzero")
+    vector = vector / norm
+    sign_value = float(np.sign(sign))
+    if sign_value == 0:
+        raise ValueError("sign must be nonzero")
+
+    preset = static.preset
+    post = static.postfault
+    yfull = np.asarray(post.metadata.get("yfull_mod", post.yfull), dtype=complex)
+    epu = np.asarray(preset.epu, dtype=float)
+    ngen = int(preset.ngen)
+    nnet = int(yfull.shape[0] - ngen)
+    m = np.asarray(preset.m, dtype=float)
+    sep_state, sep_ok, sep_residual = spm_energy.solve_spm_network(
+        np.asarray(equilibrium.delta_gen, dtype=float), yfull, epu,
+        guess=np.r_[equilibrium.theta_net, equilibrium.voltage_net],
+        tol=1e-12,
+    )
+    if not sep_ok:
+        return {"time": times, "converged": False,
+                "failure_reason": f"UEP network warm-start failed: residual={sep_residual:g}"}
+
+    x0 = np.asarray(equilibrium.delta_gen, dtype=float)[1:] + sign_value * perturb * vector
+    cache = {"z": sep_state.copy()}
+
+    def make_delta(x: np.ndarray) -> np.ndarray:
+        d23 = np.asarray(x, dtype=float).reshape(-1)
+        d1 = -float(np.dot(m[1:], d23) / m[0])
+        d = np.r_[d1, d23]
+        return d - np.dot(m, d) / np.sum(m)
+
+    def network_residual(z: np.ndarray, delta: np.ndarray) -> np.ndarray:
+        return spm_energy.spm_network_residual(z, delta, yfull, epu)
+
+    def finite_jacobian(fun, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        f0 = np.asarray(fun(x), dtype=float)
+        jac = np.empty((f0.size, x.size), dtype=float)
+        for j in range(x.size):
+            step = 1e-6 * max(1.0, abs(float(x[j])))
+            xp = x.copy(); xm = x.copy()
+            xp[j] += step; xm[j] -= step
+            jac[:, j] = (np.asarray(fun(xp)) - np.asarray(fun(xm))) / (2.0 * step)
+        return jac
+
+    # Integrate the differential-algebraic tangent explicitly after
+    # differentiating g(delta,z)=0.  This is the index-1 constrained ODE
+    # represented by MATLAB's tiny algebraic mass entries and avoids Newton
+    # branch jumps during implicit solver stage evaluations.
+    initial_delta = make_delta(x0)
+    z_initial, initial_ok, initial_residual = spm_energy.solve_spm_network(
+        initial_delta, yfull, epu, guess=sep_state, tol=1e-11
+    )
+    if not initial_ok:
+        return {"time": times, "converged": False,
+                "failure_reason": f"perturbed UEP network solve failed: residual={initial_residual:g}"}
+    z_initial = np.asarray(z_initial, dtype=float)
+
+    def rhs(_t: float, state_vec: np.ndarray) -> np.ndarray:
+        x = np.asarray(state_vec[:2], dtype=float)
+        z = np.asarray(state_vec[2:], dtype=float)
+        delta = make_delta(x)
+        pe = spm_energy.spm_generator_power(delta, z[:nnet], z[nnet:], yfull, epu)
+        mismatch = np.asarray(preset.pmpu, dtype=float) - pe
+        projected = mismatch - m / np.sum(m) * np.sum(mismatch)
+        # f_reducedstate_SPM_backward uses the negative projected generator
+        # acceleration for the two independent COI coordinates.
+        delta_dot = -projected[1:] / m[1:]
+        gz = finite_jacobian(lambda zz: network_residual(zz, delta), z)
+        gd = finite_jacobian(lambda dd: network_residual(z, make_delta(dd)), x)
+        try:
+            z_dot = np.linalg.solve(gz, -(gd @ delta_dot))
+        except np.linalg.LinAlgError as exc:
+            raise RuntimeError("stable-manifold constraint Jacobian is singular") from exc
+        return np.r_[delta_dot, z_dot]
+
+    try:
+        sol = solve_ivp(rhs, (float(times[0]), float(times[-1])),
+                        np.r_[x0, z_initial],
+                        method="RK45", t_eval=times, rtol=rtol, atol=atol,
+                        # Keep continuation increments small enough that the
+                        # constrained tangent remains on the positive-voltage
+                        # branch between output points.
+                        max_step=min(5e-3, float(np.min(np.diff(times)))) )
+    except Exception as exc:  # noqa: BLE001
+        return {"time": times, "converged": False, "failure_reason": str(exc)}
+    if not sol.success or sol.y.shape[1] != times.size:
+        return {"time": times, "converged": False,
+                "failure_reason": str(sol.message)}
+
+    delta_out = np.vstack([make_delta(sol.y[:2, k]) for k in range(times.size)])
+    theta_out = np.empty((times.size, nnet), dtype=float)
+    voltage_out = np.empty((times.size, nnet), dtype=float)
+    residuals = np.empty(times.size, dtype=float)
+    states = []
+    for k, delta in enumerate(delta_out):
+        z = np.asarray(sol.y[2:, k], dtype=float)
+        states.append(z.copy())
+        theta_out[k] = z[:nnet]
+        voltage_out[k] = z[nnet:]
+        residuals[k] = float(np.linalg.norm(network_residual(z, delta)))
+    continuity = float(max(np.linalg.norm(np.diff(np.asarray(states), axis=0), axis=1), default=0.0))
+    return {"time": times, "delta_gen": delta_out,
+            "theta_net": theta_out, "voltage_net": voltage_out,
+            "residual_norm": residuals, "branch_continuity_error": continuity,
+            "converged": bool(np.all(np.isfinite(residuals))), "sign": sign_value}
 
 
 def sample_spm_region(static, *, grid_points: int = 9,

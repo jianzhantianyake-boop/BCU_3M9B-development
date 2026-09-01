@@ -42,13 +42,13 @@ class SpmXvalGateTests(unittest.TestCase):
         self.assertEqual(entry["checks_passed"], entry["checks_total"])
         self.assertLess(entry["max_error"], 1e-6)
 
-    def test_spm_region_compares_state_and_keeps_curve_gap_explicit(self):
+    def test_spm_region_compares_equilibria_and_manifold_checkpoints(self):
         entry = run_full_xval.verify_spm_region()
-        self.assertEqual(entry["status"], "MATLAB_XVAL_PARTIAL")
-        self.assertGreater(entry["checks_total"], 0)
+        self.assertEqual(entry["status"], "MATLAB_XVAL_FULL")
+        self.assertGreaterEqual(entry["checks_total"], 20)
         self.assertEqual(entry["checks_passed"], entry["checks_total"])
         self.assertLess(entry["max_error"], 1e-6)
-        self.assertTrue(any("稳定域" in item for item in entry["limitations"]))
+        self.assertTrue(any("固定采样点" in item for item in entry["limitations"]))
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@
 发电机角处有 11+ 个解, MATLAB 靠 MGP(Fun_Cal_MGP_SPM/AEiteration_SPM)沿物理轨迹连续跟踪播种。
 这是与 v1 find_mgp 同源的数值分支难题, 尚未移植稳健的 SPM 版 controlling-UEP。因此 energy CCT 目前
 需外部传入 E_critical(如 3.3757)。物理约束: 正确的 E_crit 须 < 故障能量峰值；当前严格
-fault-network DAE 轨迹在默认案例上的峰值约为 4.82202，旧的 5.568/6.46886 仅是历史代理值；
+fault-network DAE 轨迹在默认案例上的峰值约为 4.64941，旧的 5.568/6.46886 仅是历史代理值；
 若临界能量不低于该峰值，能量法就给不出有限 CCT。
 
 单位: 角度 rad, 功率/导纳 pu。发电机在前 ngen 节点, 网络在后。依赖 scipy。

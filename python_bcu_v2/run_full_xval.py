@@ -367,7 +367,7 @@ def verify_spm_region() -> dict:
     try:
         from bcu_3m9b import build_static_result
         from bcu_v2.reference_io import as_numpy, load_reference
-        from bcu_v2.spm_region import enumerate_spm_equilibria
+        from bcu_v2.spm_region import enumerate_spm_equilibria, trace_spm_stable_manifold
 
         reference = load_reference(REFERENCE_DIR / ref)
         arrays = reference["arrays"]
@@ -424,14 +424,88 @@ def verify_spm_region() -> dict:
                       error=max(errors, default=float("inf")),
                       limitations=["MATLAB/Python 平衡点状态或类型未在登记容差内一致"])
 
-    # 当前参考只含平衡点集合；稳定域抽样/边界曲线仍需独立 MATLAB 检查点。
+    # The equilibrium reference is complemented by fixed points on the two
+    # MATLAB type-1 stable-manifold branches.  A missing or malformed manifold
+    # reference deliberately leaves this path PARTIAL rather than treating
+    # the equilibrium subset as a full region validation.
+    manifold_path = REFERENCE_DIR / "spm_region_manifold_v1.json"
+    if not manifold_path.exists():
+        limitations = limitations + [
+            "平衡点位置、网络状态、类型和残差已逐项对照；MATLAB 稳定域抽样/边界曲线尚未导出",
+            "MATLAB 与 Python branch_id 为各自生成的标识，按类型和状态匹配而非比较文本",
+        ]
+        return _entry("spm_region", "MATLAB_XVAL_PARTIAL", ref,
+                      passed=int(sum(checks)), total=len(checks),
+                      error=max(errors, default=float("nan")), limitations=limitations)
+
+    manifold_checks = []
+    manifold_errors = []
+    manifold_limits = []
+    try:
+        from bcu_v2.reference_io import as_numpy, load_reference
+        manifold = load_reference(manifold_path)
+        ma = manifold["arrays"]
+        signs = as_numpy(ma["branch_sign"]).astype(float).reshape(-1)
+        sample_time = as_numpy(ma["sample_time"]).astype(float).reshape(-1)
+        md = as_numpy(ma["delta_gen"]).astype(float)
+        mt = as_numpy(ma["theta_net"]).astype(float)
+        mv = as_numpy(ma["voltage_net"]).astype(float)
+        vectors = as_numpy(ma["perturb_vectors"]).astype(float).reshape(-1, 2)
+        if md.ndim != 3 or mt.ndim != 3 or mv.ndim != 3:
+            raise ValueError("stable-manifold arrays must be three-dimensional")
+        if not (md.shape[0] == mt.shape[0] == mv.shape[0] == signs.size
+                and md.shape[1] == mt.shape[1] == mv.shape[1] == sample_time.size
+                and vectors.shape[0] >= 1):
+            raise ValueError("stable-manifold branch/checkpoint shapes are inconsistent")
+        type1_records = [item for item in records if item.equilibrium_type == "type-1"]
+        if len(type1_records) != 1:
+            raise ValueError(f"expected one Python type-1 equilibrium, got {len(type1_records)}")
+        type1 = type1_records[0]
+
+        def periodic_max(a, b):
+            diff = np.asarray(a) - np.asarray(b)
+            return float(np.max(np.abs(np.arctan2(np.sin(diff), np.cos(diff)))))
+
+        for j, sign in enumerate(signs):
+            traced = trace_spm_stable_manifold(
+                static, type1, vectors[0], sign,
+                perturb=float(manifold.get("metadata", {}).get("perturb", 1e-2)),
+                sample_times=sample_time,
+            )
+            ok_trace = bool(traced.get("converged", False))
+            manifold_checks.append(ok_trace)
+            if not ok_trace:
+                manifold_limits.append(
+                    f"稳定流形 branch sign={sign:g} 未收敛: {traced.get('failure_reason', 'unknown')}"
+                )
+                continue
+            e_delta = max(periodic_max(traced["delta_gen"][k], md[j, k])
+                          for k in range(sample_time.size))
+            e_theta = max(periodic_max(traced["theta_net"][k], mt[j, k])
+                          for k in range(sample_time.size))
+            e_voltage = float(np.max(np.abs(traced["voltage_net"] - mv[j])))
+            e_residual = float(np.max(traced["residual_norm"]))
+            manifold_errors.extend([e_delta, e_theta, e_voltage, e_residual])
+            manifold_checks.extend([
+                e_delta < 1e-6, e_theta < 1e-6,
+                e_voltage < 1e-6, e_residual < 1e-6,
+            ])
+        checks.extend(manifold_checks)
+        errors.extend(manifold_errors)
+    except Exception as exc:  # noqa: BLE001
+        manifold_limits.append(f"稳定流形固定检查点对照异常: {exc}")
+        # A malformed or unavailable supplementary reference must not allow
+        # the equilibrium-only checks to be promoted to a full region gate.
+        checks.append(False)
+
     limitations = limitations + [
-        "平衡点位置、网络状态、类型和残差已逐项对照；MATLAB 稳定域抽样/边界曲线尚未导出",
-        "MATLAB 与 Python branch_id 为各自生成的标识，按类型和状态匹配而非比较文本",
-    ]
+        "平衡点位置、网络状态、类型和残差已逐项对照；稳定流形仅比较固定采样点，不等于连续区域全覆盖",
+        "MATLAB 与 Python branch_id 为各自生成的标识，按类型、分支符号和状态匹配而非比较文本",
+    ] + manifold_limits
     if ref_branch and len(ref_branch) != len(ref_types):
         limitations.append("MATLAB branch_id 数量与平衡点记录不一致")
-    return _entry("spm_region", "MATLAB_XVAL_PARTIAL", ref,
+    all_passed = bool(checks) and all(checks)
+    return _entry("spm_region", "MATLAB_XVAL_FULL" if all_passed else "MATLAB_XVAL_PARTIAL", ref,
                   passed=int(sum(checks)), total=len(checks),
                   error=max(errors, default=float("nan")), limitations=limitations)
 
