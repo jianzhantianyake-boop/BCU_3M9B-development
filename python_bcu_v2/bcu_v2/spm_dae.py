@@ -65,19 +65,31 @@ def _algebraic_context(state, preset):
     return yfull, load_pq, n, nload
 
 
-def _make_solver(yorg, load_pq, ngen, nload, tol=1e-11):
+def _make_solver(yorg, load_pq, ngen, nload, tol=1e-11, initial_guess=None,
+                 epu: np.ndarray | None = None):
     """内部: 返回带连续法热启动 + 回退的代数求解闭包 solve(δg)->z."""
 
     from bcu_3m9b.spm import algebraic_residual
+    from .spm_energy import spm_network_residual
 
     default_guess = np.r_[np.zeros(nload), np.ones(nload)]
+    if initial_guess is not None:
+        candidate = np.asarray(initial_guess, dtype=float).reshape(-1)
+        if candidate.size != 2 * nload:
+            raise ValueError("algebraic_guess has incompatible network width")
+        default_guess = candidate.copy()
     cache = {"z": default_guess.copy()}
 
     def solve(delta_gen: np.ndarray) -> np.ndarray:
         dg = np.asarray(delta_gen, dtype=float)
 
         def resid(z):
-            return algebraic_residual(z, dg, yorg, load_pq, ngen)
+            # The strict SPM DAE must use the generator internal-voltage
+            # magnitudes Epu.  The legacy v1 helper assumes unit magnitudes;
+            # retain it only for direct compatibility callers that omit epu.
+            if epu is None:
+                return algebraic_residual(z, dg, yorg, load_pq, ngen)
+            return spm_network_residual(z, dg, yorg, np.asarray(epu, dtype=float), load_pq)
 
         # 校正: 先用上一步解(连续法热启动).
         sol = root(resid, cache["z"], method="hybr", tol=tol)
@@ -100,9 +112,30 @@ def _make_solver(yorg, load_pq, ngen, nload, tol=1e-11):
     return solve
 
 
+def _strict_spm_generator_rhs(delta_gen: np.ndarray, omega: np.ndarray,
+                              state, preset, basevalue, algebraic: np.ndarray) -> np.ndarray:
+    """MATLAB-compatible SPM generator RHS using explicit internal voltages."""
+
+    yorg, _load_pq, ngen, nload = _algebraic_context(state, preset)
+    delta_gen = np.asarray(delta_gen, dtype=float)
+    omega = np.asarray(omega, dtype=float)
+    z = np.asarray(algebraic, dtype=float)
+    theta = np.r_[delta_gen, z[:nload]]
+    voltage = np.r_[np.asarray(preset.epu, dtype=float), z[nload:]]
+    phasor = voltage * np.exp(1j * theta)
+    injection = phasor * np.conj(yorg @ phasor)
+    pe = injection.real[:ngen]
+    coi = float(np.dot(omega, preset.m) / np.sum(preset.m))
+    return np.r_[omega - coi,
+                 (np.asarray(preset.pmpu, dtype=float) - pe
+                  - np.asarray(preset.d, dtype=float) * (omega - basevalue.omega_b))
+                 / np.asarray(preset.m, dtype=float)]
+
+
 def simulate_spm_dae(tlength: float, tunit: float, state, preset, basevalue,
                      delta0: np.ndarray, omega0: np.ndarray,
-                     method: str = "RK45", rtol: float = 1e-8, atol: float = 1e-10) -> Dict:
+                     method: str = "RK45", rtol: float = 1e-8, atol: float = 1e-10,
+                     algebraic_guess: np.ndarray | None = None) -> Dict:
     """严格 DAE 级 SPM 仿真(约束流形降阶 ODE + 连续法).
 
     使用方法:
@@ -113,7 +146,9 @@ def simulate_spm_dae(tlength: float, tunit: float, state, preset, basevalue,
     from bcu_3m9b.spm import spm_generator_rhs
 
     yorg, load_pq, n, nload = _algebraic_context(state, preset)
-    solve_alg = _make_solver(yorg, load_pq, n, nload)
+    solve_alg = _make_solver(yorg, load_pq, n, nload,
+                             initial_guess=algebraic_guess,
+                             epu=np.asarray(preset.epu, dtype=float))
 
     # 一致初始化: 在初始发电机角上解代数, 作为流形起点.
     solve_alg.reset()
@@ -122,7 +157,7 @@ def simulate_spm_dae(tlength: float, tunit: float, state, preset, basevalue,
     def rhs(t, x):
         dg, om = x[:n], x[n:]
         z = solve_alg(dg)  # 连续法: 约束在每个求值点严格满足
-        return spm_generator_rhs(dg, om, state, preset, basevalue, z)
+        return _strict_spm_generator_rhs(dg, om, state, preset, basevalue, z)
 
     # ``tunit`` is a requested output spacing, so include both endpoints:
     # N intervals require N+1 samples.  The previous N-sample grid drifted
@@ -143,6 +178,48 @@ def simulate_spm_dae(tlength: float, tunit: float, state, preset, basevalue,
             "delta_coi": delta_coi, "success": bool(sol.success), "method": method}
 
 
+def remap_algebraic_state(z: np.ndarray, from_state, to_state, ngen: int,
+                          fallback: np.ndarray | None = None) -> np.ndarray:
+    """Map ``[theta_net, voltage_net]`` between bus orderings by bus number.
+
+    This is used at prefault/fault and fault/postfault boundaries.  A removed
+    fault bus is omitted from the target state; no zero is inserted as a
+    physical network value.  The six-slot MATLAB placeholder is added only by
+    reference exporters, never to the Python DAE solver.
+    """
+
+    z = np.asarray(z, dtype=float).reshape(-1)
+    from_buses = np.asarray(from_state.metadata["transform"], dtype=int)[ngen:]
+    to_buses = np.asarray(to_state.metadata["transform"], dtype=int)[ngen:]
+    n_from, n_to = from_buses.size, to_buses.size
+    if z.size != 2 * n_from:
+        raise ValueError("algebraic state width does not match source network")
+    theta_from, voltage_from = z[:n_from], z[n_from:]
+    fallback_theta = fallback_voltage = None
+    if fallback is not None:
+        fallback = np.asarray(fallback, dtype=float).reshape(-1)
+        if fallback.size != 2 * n_to:
+            raise ValueError("fallback algebraic state width does not match target network")
+        fallback_theta, fallback_voltage = fallback[:n_to], fallback[n_to:]
+    theta_to = np.empty(n_to, dtype=float)
+    voltage_to = np.empty(n_to, dtype=float)
+    for j, bus in enumerate(to_buses):
+        matches = np.flatnonzero(from_buses == int(bus))
+        if matches.size == 1:
+            i = int(matches[0])
+            theta_to[j] = theta_from[i]
+            voltage_to[j] = voltage_from[i]
+        elif matches.size == 0 and fallback is not None:
+            # A faulted bus can re-enter the postfault network.  Carry its
+            # physically solved target-network value from ``fallback`` rather
+            # than inserting a zero or selecting a cold-start root.
+            theta_to[j] = fallback_theta[j]
+            voltage_to[j] = fallback_voltage[j]
+        else:
+            raise ValueError(f"target network bus {int(bus)} missing or duplicated in source")
+    return np.r_[theta_to, voltage_to]
+
+
 def simulate_spm_trajectory(static, *, clear_time: float = 0.2,
                             postfault_time: float = 0.3, tunit: float = 1e-3,
                             method: str = "RK45") -> SpmTrajectoryResult:
@@ -157,12 +234,36 @@ def simulate_spm_trajectory(static, *, clear_time: float = 0.2,
     preset, base = static.preset, static.basevalue
     delta0 = np.asarray(static.prefault.sep_delta, dtype=float)
     omega0 = np.full(preset.ngen, float(static.prefault.sep_omegapu) * base.omega_b)
+    # Solve the prefault SEP network first and map its physical branch into
+    # the fault network.  Starting fault DAE from [0, ..., 1, ...] can select
+    # a different algebraic voltage branch even when both roots have tiny
+    # residuals.
+    from .spm_energy import solve_spm_network
+    pref_state, pref_ok, pref_residual = solve_spm_network(
+        delta0, np.asarray(static.prefault.metadata["yfull_mod"], dtype=complex), preset.epu
+    )
+    if not pref_ok:
+        raise RuntimeError(f"prefault SPM network warm-start failed: residual={pref_residual:g}")
+    fault_guess = remap_algebraic_state(pref_state, static.prefault, static.fault, preset.ngen)
     fault = simulate_spm_dae(clear_time, tunit, static.fault, preset, base,
-                              delta0, omega0, method=method)
+                              delta0, omega0, method=method,
+                              algebraic_guess=fault_guess)
     delta_clear = fault["delta"][-1]
     omega_clear = fault["omega"][-1]
+    post_sep_state, post_sep_ok, post_sep_residual = solve_spm_network(
+        np.asarray(static.postfault.sep_delta, dtype=float),
+        np.asarray(static.postfault.metadata["yfull_mod"], dtype=complex),
+        preset.epu,
+    )
+    if not post_sep_ok:
+        raise RuntimeError(f"postfault SPM network warm-start failed: residual={post_sep_residual:g}")
+    post_guess = remap_algebraic_state(
+        fault["algebraic"][-1], static.fault, static.postfault, preset.ngen,
+        fallback=post_sep_state,
+    )
     post = simulate_spm_dae(postfault_time, tunit, static.postfault, preset, base,
-                             delta_clear, omega_clear, method=method)
+                             delta_clear, omega_clear, method=method,
+                             algebraic_guess=post_guess)
 
     # 保留 t=0 的 prefault 标签，故障段从第二个点开始，清除点独立标注。
     f_slice = slice(1, None)
@@ -197,21 +298,22 @@ def simulate_spm_trajectory(static, *, clear_time: float = 0.2,
     labels = np.asarray(["prefault"] + ["fault-on"] * max(0, n_fault - 1) +
                         (["clearing"] if n_fault else []) +
                         ["postfault recovery"] * n_post, dtype=object)
+    from .spm_energy import spm_network_residual
     yorg_f, load_f, n, nload_f = _algebraic_context(static.fault, preset)
     yorg_p, load_p, _, nload_p = _algebraic_context(static.postfault, preset)
     residual = []
     for k in range(delta.shape[0]):
         if k <= n_fault:
             z = np.asarray(fault["algebraic"][k], dtype=float)
-            value = float(np.linalg.norm(__import__("bcu_3m9b.spm", fromlist=["algebraic_residual"]).algebraic_residual(
-                z, delta[k], yorg_f, load_f, n)))
+            value = float(np.linalg.norm(spm_network_residual(
+                z, delta[k], yorg_f, np.asarray(preset.epu, dtype=float), load_f)))
             residual.append(value if value < 1e-7 else np.nan)
         else:
             post_index = k - n_fault
             raw_post = post["algebraic"][post_index]
             z = np.asarray(raw_post, dtype=float)
-            value = float(np.linalg.norm(__import__("bcu_3m9b.spm", fromlist=["algebraic_residual"]).algebraic_residual(
-                z, delta[k], yorg_p, load_p, n)))
+            value = float(np.linalg.norm(spm_network_residual(
+                z, delta[k], yorg_p, np.asarray(preset.epu, dtype=float), load_p)))
             residual.append(value if value < 1e-7 else np.nan)
     theta_net = np.vstack(theta_parts)
     voltage_net = np.vstack(voltage_parts)

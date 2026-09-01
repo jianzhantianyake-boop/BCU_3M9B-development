@@ -83,6 +83,18 @@ class ReferenceIoTests(unittest.TestCase):
         self.assertIsInstance(phase, list)
         self.assertEqual(len(phase), len(data["arrays"]["time"]))
 
+    def test_fault1_trajectory_reference_declares_comparable_frame(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "validation" / "references" / "spm_numerical_v2.json"
+        if not path.exists():
+            self.skipTest("fault1 compact SPM trajectory reference has not been exported")
+        data = load_reference(path)
+        self.assertEqual(data["metadata"]["network_context"], "fault1")
+        self.assertEqual(data["metadata"]["omega_frame"], "coi_relative")
+        self.assertLess(float(data["evidence"]["max_error"]), 1e-6)
+        residual = np.asarray(data["arrays"]["algebraic_residual"], dtype=float)
+        self.assertEqual(residual.shape, np.asarray(data["arrays"]["time"]).shape)
+        self.assertTrue(np.all(np.isfinite(residual)))
+
 
 if __name__ == "__main__":
     unittest.main()

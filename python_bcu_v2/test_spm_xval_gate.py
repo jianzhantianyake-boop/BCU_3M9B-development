@@ -30,6 +30,18 @@ class SpmXvalGateTests(unittest.TestCase):
         self.assertGreater(diagnostics["max_fault_residual"], 1e-6)
         self.assertIn("fault1", diagnostics["reason"])
 
+    def test_fault1_v2_reference_is_comparable_and_python_matches(self):
+        path = ROOT.parent / "validation" / "references" / "spm_numerical_v2.json"
+        if not path.exists():
+            self.skipTest("fault1 compact SPM reference has not been exported")
+        diagnostics = run_full_xval.inspect_spm_fault_reference(path)
+        self.assertTrue(diagnostics["comparable"])
+        self.assertLess(diagnostics["max_fault_residual"], 1e-6)
+        entry = run_full_xval.verify_spm_numerical()
+        self.assertEqual(entry["status"], "MATLAB_XVAL_FULL")
+        self.assertEqual(entry["checks_passed"], entry["checks_total"])
+        self.assertLess(entry["max_error"], 1e-6)
+
     def test_spm_region_compares_state_and_keeps_curve_gap_explicit(self):
         entry = run_full_xval.verify_spm_region()
         self.assertEqual(entry["status"], "MATLAB_XVAL_PARTIAL")

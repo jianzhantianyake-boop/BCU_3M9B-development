@@ -209,7 +209,7 @@ def spm_fault_energy_series(static, *, tfault: float = 0.6,
     """
     if tfault <= 0 or tunit <= 0:
         raise ValueError("tfault and tunit must be positive")
-    from .spm_dae import simulate_spm_dae
+    from .spm_dae import remap_algebraic_state, simulate_spm_dae
 
     preset, base = static.preset, static.basevalue
     fault, postfault = static.fault, static.postfault
@@ -224,8 +224,18 @@ def spm_fault_energy_series(static, *, tfault: float = 0.6,
     sep_nt, sep_nv = sep_state[:nnet], sep_state[nnet:]
     delta0 = np.asarray(static.prefault.sep_delta, dtype=float)
     omega0 = np.full(ngen, float(static.prefault.sep_omegapu) * base.omega_b)
+    pref_state, pref_ok, pref_residual = solve_spm_network(
+        delta0, _yfull_mod(static.prefault), epu
+    )
+    if not pref_ok:
+        return np.array([], dtype=float), np.array([], dtype=float), False
+    try:
+        fault_guess = remap_algebraic_state(pref_state, static.prefault, fault, ngen)
+    except (KeyError, ValueError):
+        return np.array([], dtype=float), np.array([], dtype=float), False
     trajectory = simulate_spm_dae(tfault, tunit, fault, preset, base,
-                                  delta0, omega0, method=method)
+                                  delta0, omega0, method=method,
+                                  algebraic_guess=fault_guess)
     if not trajectory.get("success", False):
         return np.asarray(trajectory.get("time", []), dtype=float), \
             np.full(len(trajectory.get("time", [])), np.nan), False

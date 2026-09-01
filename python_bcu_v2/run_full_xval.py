@@ -268,7 +268,11 @@ def verify_spm_cct() -> dict:
 
 
 def verify_spm_numerical() -> dict:
-    ref = "spm_numerical_v1.json"
+    # v1 captured Cal_MM_CCT_SPM.fault.traj, whose network columns are the
+    # postfault correction used for energy bookkeeping.  v2 is the immutable
+    # fault1/ode15s export and is the only reference eligible for a strict
+    # numerical comparison.  Keep v1 in the repository as historical evidence.
+    ref = "spm_numerical_v2.json"
     status, limitations = _reference_status(ref)
     if status != "AVAILABLE":
         return _entry("spm_numerical", status, ref,
@@ -293,7 +297,8 @@ def verify_spm_numerical() -> dict:
     # fault-only state dimension and registered checkpoint times.
     try:
         from bcu_3m9b import build_static_result
-        from bcu_v2.spm_dae import simulate_spm_dae
+        from bcu_v2.spm_dae import remap_algebraic_state, simulate_spm_dae
+        from bcu_v2.spm_energy import solve_spm_network
         static = build_static_result()
         preset, base = static.preset, static.basevalue
         delta0 = np.asarray(static.prefault.sep_delta, dtype=float)
@@ -302,8 +307,17 @@ def verify_spm_numerical() -> dict:
         meta = reference_data["metadata"]
         times = np.asarray(reference_data["arrays"]["time"], dtype=float)
         tunit = float(meta.get("tunit", 1e-4))
+        pref_state, pref_ok, pref_residual = solve_spm_network(
+            delta0, np.asarray(static.prefault.metadata["yfull_mod"], dtype=complex), preset.epu
+        )
+        if not pref_ok:
+            return _entry("spm_numerical", "UNVERIFIED", ref,
+                          limitations=[f"Python prefault SPM network warm-start failed: residual={pref_residual:g}"])
+        fault_guess = remap_algebraic_state(pref_state, static.prefault, static.fault, preset.ngen)
         trajectory = simulate_spm_dae(float(np.max(times)), tunit, static.fault,
-                                      preset, base, delta0, omega0, method="Radau")
+                                      preset, base, delta0, omega0, method="Radau",
+                                      rtol=1e-10, atol=1e-12,
+                                      algebraic_guess=fault_guess)
         if not trajectory["success"]:
             return _entry("spm_numerical", "UNVERIFIED", ref,
                           limitations=["Python fault-only DAE did not converge"])
@@ -320,9 +334,12 @@ def verify_spm_numerical() -> dict:
             nload = z.size // 2
             theta_py = np.insert(z[:nload], placeholder, 0.0)
             voltage_py = np.insert(z[nload:], placeholder, 0.0)
+            omega_py = np.asarray(trajectory["omega"][idx], dtype=float)
+            if str(meta.get("omega_frame", "absolute")) == "coi_relative":
+                omega_py = omega_py - np.dot(omega_py, preset.m) / np.sum(preset.m)
             group_errors = [
                 float(np.max(np.abs(trajectory["delta"][idx] - ref_delta[k]))),
-                float(np.max(np.abs(trajectory["omega"][idx] - ref_omega[k]))),
+                float(np.max(np.abs(omega_py - ref_omega[k]))),
                 float(np.max(np.abs(theta_py - ref_theta[k]))),
                 float(np.max(np.abs(voltage_py - ref_voltage[k]))),
             ]

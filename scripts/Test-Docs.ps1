@@ -78,7 +78,10 @@ $outdated = @(
     'reduced region、reduced numerical、two-machine 尚未对照',
     'v1 仍绝对冻结'
 )
-foreach ($relative in @('README.md') + (Get-ChildItem -LiteralPath (Join-Path $root 'docs') -Recurse -File -Filter '*.md' | ForEach-Object { $_.FullName.Substring($root.Length + 1) })) {
+$authoritative = @('README.md')
+$authoritative += @(Get-ChildItem -LiteralPath (Join-Path $root 'docs') -Recurse -File -Filter '*.md' |
+    ForEach-Object { $_.FullName.Substring($root.Length + 1) })
+foreach ($relative in $authoritative) {
     $path = Join-Path $root $relative
     if (-not (Test-Path -LiteralPath $path)) { continue }
     $text = Get-Content -LiteralPath $path -Raw -Encoding utf8
