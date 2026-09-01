@@ -64,7 +64,8 @@ try
     record.metadata.escape_index = evalin('base', 'escape.tm');
     record.arrays = struct('time', timeOut(:).', 'delta_gen', {deltaOut}, ...
         'omega_gen', {omegaOut}, 'theta_net', {thetaOut}, ...
-        'voltage_net', {voltageOut}, 'phase', 'fault-on');
+        'voltage_net', {voltageOut}, ...
+        'phase', {repmat({'fault-on'}, 1, numel(idx))});
 catch err
     record.status = 'BLOCKED';
     record.reason = ['SPM trajectory export failed: ' err.message];

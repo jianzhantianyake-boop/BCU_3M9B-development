@@ -8,7 +8,9 @@ import numpy as np
 
 import bcu_v2  # noqa: F401
 from bcu_3m9b import build_static_result
+from bcu_3m9b.spm import algebraic_residual
 from bcu_v2.spm_dae import (SpmTrajectoryResult, select_spm_checkpoints,
+                             _algebraic_context, _make_solver,
                              simulate_spm_trajectory)
 
 
@@ -55,6 +57,20 @@ class SpmTrajectoryTests(unittest.TestCase):
         self.assertFalse(checkpoints[5]["available"])
         self.assertTrue(checkpoints[6]["available"])
         self.assertAlmostEqual(checkpoints[2]["actual_time"], clear_time, places=12)
+
+    def test_fault_network_solver_rejects_inconsistent_cold_root(self):
+        """SPM fault equations must use the loaded impedance network and zero PQ load."""
+        preset = self.static.preset
+        yfull, load_pq, ngen, nload = _algebraic_context(self.static.fault, preset)
+        solver = _make_solver(yfull, load_pq, ngen, nload)
+        z = solver(self.static.prefault.sep_delta)
+        residual = np.linalg.norm(
+            algebraic_residual(z, self.static.prefault.sep_delta,
+                               yfull, load_pq, ngen)
+        )
+        self.assertLess(residual, 1e-7)
+        self.assertTrue(np.all(np.isfinite(z[nload:])))
+        self.assertTrue(np.all(z[nload:] > 1e-4))
 
 
 if __name__ == "__main__":

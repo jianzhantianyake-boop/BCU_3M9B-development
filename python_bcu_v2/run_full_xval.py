@@ -72,6 +72,115 @@ def _load_reference_record(filename: str) -> dict:
     return load_reference(REFERENCE_DIR / filename)
 
 
+def inspect_spm_fault_reference(path: Path) -> dict:
+    """Check that a MATLAB SPM fault checkpoint satisfies its declared network.
+
+    MATLAB's ``fault.traj`` stores a zero placeholder for the deleted fault bus,
+    while the actual ``fault1`` algebraic system has only five network nodes in
+    the default 3M9B case.  This diagnostic removes that *declared* placeholder
+    using the recorded bus ordering and evaluates the physical SPM residual; it
+    never treats a failed residual as a usable comparison point.
+    """
+    from bcu_3m9b import build_static_result
+    from bcu_v2.reference_io import load_reference
+    from bcu_v2.spm_energy import spm_network_residual
+
+    data = load_reference(Path(path))
+    arrays = data.get("arrays", {})
+    required = ("time", "delta_gen", "theta_net", "voltage_net")
+    missing = [name for name in required if name not in arrays]
+    if missing:
+        return {
+            "comparable": False,
+            "max_fault_residual": float("inf"),
+            "residuals": [],
+            "reason": f"fault1 reference missing arrays: {', '.join(missing)}",
+        }
+
+    static = build_static_result()
+    preset = static.preset
+    yfull = np.asarray(static.fault.metadata["yfull_mod"], dtype=complex)
+    nload = yfull.shape[0] - preset.ngen
+    full_non_gen = [int(bus) for bus in np.asarray(
+        static.prefault.metadata["transform"], dtype=int)[preset.ngen:]
+    ]
+    removed_bus = static.fault.removed_bus
+    placeholder = None
+    if removed_bus is not None and int(removed_bus) in full_non_gen:
+        placeholder = full_non_gen.index(int(removed_bus))
+
+    times = np.asarray(arrays["time"], dtype=float).reshape(-1)
+    delta = np.asarray(arrays["delta_gen"], dtype=float)
+    theta = np.asarray(arrays["theta_net"], dtype=float)
+    voltage = np.asarray(arrays["voltage_net"], dtype=float)
+    lengths = {times.size, delta.shape[0], theta.shape[0], voltage.shape[0]}
+    if len(lengths) != 1:
+        return {
+            "comparable": False,
+            "max_fault_residual": float("inf"),
+            "residuals": [],
+            "reason": "fault1 reference checkpoint arrays have inconsistent lengths",
+        }
+    if delta.ndim != 2 or delta.shape[1] != preset.ngen:
+        return {
+            "comparable": False,
+            "max_fault_residual": float("inf"),
+            "residuals": [],
+            "reason": "fault1 reference delta_gen shape is incompatible with 3M9B",
+        }
+    if theta.ndim != 2 or voltage.ndim != 2:
+        return {
+            "comparable": False,
+            "max_fault_residual": float("inf"),
+            "residuals": [],
+            "reason": "fault1 reference network arrays must be two-dimensional",
+        }
+    if theta.shape[1] == nload + 1 and voltage.shape[1] == nload + 1:
+        if placeholder is None:
+            return {
+                "comparable": False,
+                "max_fault_residual": float("inf"),
+                "residuals": [],
+                "reason": "fault1 reference has a placeholder column but removed bus is unknown",
+            }
+        theta = np.delete(theta, placeholder, axis=1)
+        voltage = np.delete(voltage, placeholder, axis=1)
+    if theta.shape[1] != nload or voltage.shape[1] != nload:
+        return {
+            "comparable": False,
+            "max_fault_residual": float("inf"),
+            "residuals": [],
+            "reason": (f"fault1 reference network width {theta.shape[1]}/{voltage.shape[1]} "
+                       f"does not match physical width {nload}"),
+        }
+
+    zeros = np.zeros((nload, 2), dtype=float)
+    residuals: list[float] = []
+    for dg, th, vv in zip(delta, theta, voltage):
+        if not (np.all(np.isfinite(dg)) and np.all(np.isfinite(th))
+                and np.all(np.isfinite(vv)) and np.all(vv > 1e-4)):
+            residuals.append(float("inf"))
+            continue
+        x = np.r_[th, vv]
+        residuals.append(float(np.linalg.norm(
+            spm_network_residual(x, dg, yfull, preset.epu, zeros)
+        )))
+    max_residual = float(max(residuals, default=float("inf")))
+    comparable = bool(np.isfinite(max_residual) and max_residual < 1e-6)
+    reason = "" if comparable else (
+        f"fault1 reference network residual max={max_residual:.6g}; "
+        "MATLAB SPM checkpoint states are not algebraically consistent with fault1"
+    )
+    return {
+        "comparable": comparable,
+        "max_fault_residual": max_residual,
+        "residuals": residuals,
+        "reason": reason,
+        "placeholder_index": placeholder,
+        "physical_network_width": nload,
+    }
+
+
 def _spm_frame_limitations(data: dict) -> list[str]:
     """Detect the known MATLAB SPM projected/raw network-angle mismatch.
 
@@ -159,8 +268,77 @@ def verify_spm_cct() -> dict:
 
 
 def verify_spm_numerical() -> dict:
-    return _entry("spm_numerical", "APPROXIMATE", "spm_cct_v1.json",
-                  limitations=["已有连续 DAE 原型；尚无 MATLAB 固定检查点对照"])
+    ref = "spm_numerical_v1.json"
+    status, limitations = _reference_status(ref)
+    if status != "AVAILABLE":
+        return _entry("spm_numerical", status, ref,
+                      limitations=limitations + ["尚无可用 MATLAB 固定检查点参考"])
+    try:
+        reference_data = _load_reference_record(ref)
+        diagnostics = inspect_spm_fault_reference(REFERENCE_DIR / ref)
+    except Exception as exc:  # noqa: BLE001
+        return _entry("spm_numerical", "FAILED", ref,
+                      limitations=[f"SPM 轨迹参考诊断异常: {exc}"])
+    if not diagnostics["comparable"]:
+        return _entry(
+            "spm_numerical", "NOT_COMPARABLE", ref,
+            total=len(diagnostics.get("residuals", [])),
+            error=diagnostics.get("max_fault_residual"),
+            limitations=[diagnostics["reason"],
+                          "未运行跨平台误差统计；先修正 MATLAB fault1 轨迹状态或重新导出参考"],
+        )
+
+    # The strict trajectory comparison is intentionally only reached after the
+    # reference passes its own fault-network residual gate.  It uses the same
+    # fault-only state dimension and registered checkpoint times.
+    try:
+        from bcu_3m9b import build_static_result
+        from bcu_v2.spm_dae import simulate_spm_dae
+        static = build_static_result()
+        preset, base = static.preset, static.basevalue
+        delta0 = np.asarray(static.prefault.sep_delta, dtype=float)
+        omega0 = np.full(preset.ngen,
+                          float(static.prefault.sep_omegapu) * base.omega_b)
+        meta = reference_data["metadata"]
+        times = np.asarray(reference_data["arrays"]["time"], dtype=float)
+        tunit = float(meta.get("tunit", 1e-4))
+        trajectory = simulate_spm_dae(float(np.max(times)), tunit, static.fault,
+                                      preset, base, delta0, omega0, method="Radau")
+        if not trajectory["success"]:
+            return _entry("spm_numerical", "UNVERIFIED", ref,
+                          limitations=["Python fault-only DAE did not converge"])
+        ref_delta = np.asarray(reference_data["arrays"]["delta_gen"], dtype=float)
+        ref_omega = np.asarray(reference_data["arrays"]["omega_gen"], dtype=float)
+        ref_theta = np.asarray(reference_data["arrays"]["theta_net"], dtype=float)
+        ref_voltage = np.asarray(reference_data["arrays"]["voltage_net"], dtype=float)
+        placeholder = diagnostics["placeholder_index"]
+        checks = []
+        errors = []
+        for k, target in enumerate(times):
+            idx = int(np.argmin(np.abs(np.asarray(trajectory["time"]) - target)))
+            z = np.asarray(trajectory["algebraic"][idx], dtype=float)
+            nload = z.size // 2
+            theta_py = np.insert(z[:nload], placeholder, 0.0)
+            voltage_py = np.insert(z[nload:], placeholder, 0.0)
+            group_errors = [
+                float(np.max(np.abs(trajectory["delta"][idx] - ref_delta[k]))),
+                float(np.max(np.abs(trajectory["omega"][idx] - ref_omega[k]))),
+                float(np.max(np.abs(theta_py - ref_theta[k]))),
+                float(np.max(np.abs(voltage_py - ref_voltage[k]))),
+            ]
+            checks.extend([e < tol for e, tol in zip(group_errors,
+                                                      (1e-6, 1e-5, 1e-6, 1e-6))])
+            errors.extend(group_errors)
+        passed = int(sum(checks))
+        total = len(checks)
+        path_status = "MATLAB_XVAL_FULL" if passed == total else "UNVERIFIED"
+        return _entry("spm_numerical", path_status, ref, passed=passed,
+                      total=total, error=max(errors, default=float("nan")),
+                      limitations=[] if passed == total else
+                      ["固定检查点至少有一组变量超出登记容差"])
+    except Exception as exc:  # noqa: BLE001
+        return _entry("spm_numerical", "FAILED", ref,
+                      limitations=[f"SPM 固定检查点对照异常: {exc}"])
 
 
 def verify_spm_region() -> dict:

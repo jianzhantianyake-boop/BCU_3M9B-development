@@ -73,6 +73,16 @@ class ReferenceIoTests(unittest.TestCase):
         coherent = raw + float(arrays["cuep_frame_shift"])
         self.assertGreater(float(np.max(np.abs(coherent - projected))), 1e-6)
 
+    def test_spm_trajectory_reference_schema_is_loadable(self) -> None:
+        """Fixed-point SPM references may include per-checkpoint phase labels."""
+        path = Path(__file__).resolve().parents[1] / "validation" / "references" / "spm_numerical_v1.json"
+        if not path.exists():
+            self.skipTest("compact SPM trajectory reference has not been exported")
+        data = load_reference(path)
+        phase = data["arrays"].get("phase")
+        self.assertIsInstance(phase, list)
+        self.assertEqual(len(phase), len(data["arrays"]["time"]))
+
 
 if __name__ == "__main__":
     unittest.main()

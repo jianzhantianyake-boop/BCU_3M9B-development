@@ -41,16 +41,28 @@ class SpmTrajectoryResult:
 
 
 def _algebraic_context(state, preset):
-    """内部: 取 SPM 代数方程所需的重排导纳 / 负荷 / 维度."""
+    """内部: 取 MATLAB SPM 所用的重排恒阻抗网络上下文.
 
-    from bcu_3m9b.spm import _load_power
+    MATLAB 的 SPM 在 ``Yfull_mod`` 中已经并入恒阻抗负荷，因此网络母线的
+    P/Q 代数约束为零；它不是 v1 的 ``无负荷导纳 + 恒功率负荷`` 方程。故障
+    工况还会删去故障母线，``yfull_mod`` 的宽度随工况变化，但发电机始终在
+    前 ``ngen`` 个节点。
+    """
 
-    yorg = np.asarray(state.metadata.get("yorg_mod", state.yfull), dtype=complex)
-    transform = np.asarray(state.metadata.get("transform"), dtype=int)
+    yfull_mod = state.metadata.get("yfull_mod")
+    if yfull_mod is None:
+        # Compatibility fallback for hand-built NetworkState values.  The
+        # static builder always supplies yfull_mod, so this branch is only a
+        # diagnostic convenience and does not silently add constant-power
+        # loads.
+        yfull_mod = state.metadata.get("yorg_mod", state.yfull)
+    yfull = np.asarray(yfull_mod, dtype=complex)
     n = preset.ngen
-    load_pq = _load_power(preset, transform[n:])
-    nload = yorg.shape[0] - n
-    return yorg, load_pq, n, nload
+    nload = yfull.shape[0] - n
+    if nload < 0:
+        raise ValueError("SPM network has fewer nodes than generators")
+    load_pq = np.zeros((nload, 2), dtype=float)
+    return yfull, load_pq, n, nload
 
 
 def _make_solver(yorg, load_pq, ngen, nload, tol=1e-11):
