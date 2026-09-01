@@ -33,14 +33,68 @@ report.mgp = local_field_snapshot('MGP', {'detac_MGP','theta_MGP', ...
 report.cuep = local_field_snapshot('postfault', {'CUEP_delta', ...
     'CUEP_omegapu','CUEP_net_theta','CUEP_net_voltage','CUEP_Perr'});
 report.fsolve = local_workspace_snapshot({'x_init','Results_fsolve'});
+report.physical_cuep = local_physical_cuep_snapshot();
 report.notes = { ...
     '只读诊断：不修改 B3_MM 或 Fun_Cal_MGP_SPM.m。', ...
     '疑似复制错误行只记录是否存在，不据此直接认定 MATLAB 缺陷。', ...
-    '若变量未保留在 base workspace，则对应字段为 unavailable。'};
+    '若变量未保留在 base workspace，则对应字段为 unavailable。', ...
+    'physical_cuep 使用 Results_fsolve 的原始网络角减去实际 CUEP COI 平移，单独评估正确 SPM 网络残差与势能。'};
 
 parent = fileparts(outputFile);
 if ~isempty(parent) && ~isfolder(parent)
     mkdir(parent);
+end
+
+function snapshot = local_physical_cuep_snapshot()
+% Reconstruct the CUEP network state in one consistent COI frame and check
+% it against the physical SPM P/Q equations.  This is diagnostic-only: it
+% never changes the MATLAB B3_MM solver or its base-workspace variables.
+snapshot = struct('available', false);
+try
+    hasVars = evalin('base', ['exist(''postfault'', ''var'') == 1 && ' ...
+        'exist(''preset'', ''var'') == 1 && exist(''Results_fsolve'', ''var'') == 1']);
+    if ~hasVars
+        snapshot.unavailable_reason = 'postfault/preset/Results_fsolve unavailable';
+        return;
+    end
+    postfault = evalin('base', 'postfault');
+    preset = evalin('base', 'preset');
+    raw = evalin('base', 'Results_fsolve');
+    ngen = size(preset.genno, 1);
+    nbus = size(postfault.Yfull_mod, 1);
+    if ~isfield(postfault, 'CUEP_delta') || ~isfield(postfault, 'deltacoi') || ...
+            ~isfield(postfault, 'CUEP_net_voltage') || numel(raw) < 2 * nbus - ngen
+        snapshot.unavailable_reason = 'CUEP fields or raw fsolve width unavailable';
+        return;
+    end
+    delta = postfault.CUEP_delta(:);
+    raw_theta = raw((ngen + 1):nbus);
+    voltage = postfault.CUEP_net_voltage(:);
+    frame_shift = postfault.deltacoi;
+    corrected_theta = raw_theta - frame_shift;
+    Y = postfault.Yfull_mod;
+    all_theta = [delta; corrected_theta];
+    all_voltage = [preset.Epu(:); voltage];
+    phasor = all_voltage .* exp(1i * all_theta);
+    injection = phasor .* conj(Y * phasor);
+    network_residual = [real(injection((ngen + 1):nbus)); ...
+        imag(injection((ngen + 1):nbus))];
+    [Ep1, Ep2, Ep3, Ep4, Ep5] = Fun_Cal_PotentialEnergy_SPM(...
+        preset, postfault, delta, corrected_theta, voltage);
+    Ep = [Ep1, Ep2, Ep3, Ep4, Ep5];
+    snapshot.available = true;
+    snapshot.frame_shift = frame_shift;
+    snapshot.raw_net_theta = raw_theta;
+    snapshot.corrected_net_theta = corrected_theta;
+    snapshot.cuep_delta = delta;
+    snapshot.cuep_net_voltage = voltage;
+    snapshot.network_residual = norm(network_residual);
+    snapshot.energy_components = Ep(:).';
+    snapshot.e_critical = sum(Ep);
+catch err
+    snapshot.available = false;
+    snapshot.unavailable_reason = err.message;
+end
 end
 fid = fopen(outputFile, 'w');
 if fid < 0
