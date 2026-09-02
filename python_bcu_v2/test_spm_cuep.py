@@ -79,11 +79,46 @@ class SpmCuepTests(unittest.TestCase):
             network_residual=float(residual),
             branch_continuity_error=0.0,
         )
-        result = solve_spm_cuep(self.static, mgp)
+        # Bypass the production alternative-candidate search so this test
+        # exercises the machine-readable energy-gate failure itself.
+        result = solve_spm_cuep(self.static, mgp,
+                                _allow_candidate_fallback=False)
         self.assertFalse(result.converged)
         self.assertEqual(result.failure_code, "ENERGY_GATE_EXCEEDED")
         self.assertTrue(np.isfinite(result.energy_peak))
         self.assertGreaterEqual(result.e_critical, result.energy_peak)
+
+    def test_solver_selects_other_type1_candidate_after_energy_gate_failure(self):
+        """MGP 候选越过故障峰值时，求解器应继续筛选其他 type-1 候选。"""
+        yfull = np.asarray(self.static.postfault.metadata["yfull_mod"])
+        first_delta = np.array([-0.7585584172568889, 1.8575840695226964,
+                                1.9978354475151372])
+        z, converged, residual = solve_spm_network(
+            first_delta, yfull, self.static.preset.epu, tol=1e-12,
+        )
+        self.assertTrue(converged, msg=f"network residual={residual:g}")
+        mgp = SpmMgpResult(
+            delta_gen=first_delta,
+            theta_net=z[:6],
+            voltage_net=z[6:],
+            gradient_norm=0.0,
+            trajectory_count=1,
+            exit_reason="test first MGP candidate",
+            converged=True,
+            network_residual=float(residual),
+            branch_continuity_error=0.0,
+        )
+        result = solve_spm_cuep(self.static, mgp)
+        self.assertTrue(result.converged, msg=result.exit_reason)
+        self.assertEqual(result.failure_code, "CONVERGED")
+        self.assertLess(result.e_critical, result.energy_peak)
+        self.assertFalse(np.allclose(result.delta_gen, first_delta, atol=1e-6))
+        np.testing.assert_allclose(
+            result.delta_gen,
+            np.array([1.0325434376988165, -2.634499382702954,
+                      -2.4942480047206974]),
+            atol=1e-6,
+        )
 
     def test_self_contained_result_supports_tuple_unpacking(self):
         result = spm_self_contained_cct(

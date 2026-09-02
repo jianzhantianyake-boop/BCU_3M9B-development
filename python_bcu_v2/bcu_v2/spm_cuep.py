@@ -405,6 +405,34 @@ def _candidate_delta(static, mgp: Optional[SpmMgpResult]) -> tuple[Optional[np.n
     return np.asarray(result.cuep, dtype=float), "closest type-1 UEP candidate"
 
 
+def _alternative_candidate_deltas(static, current: np.ndarray) -> list[tuple[np.ndarray, str]]:
+    """Return reduced type-1 candidates other than the currently rejected one.
+
+    The MGP path is intentionally tried first.  If its physical energy gate
+    rejects the result, this bounded candidate expansion prevents the caller
+    from treating ``closest-by-distance`` as the only possible controlling
+    branch.  Every returned angle still goes through the full SPM network,
+    joint-residual, voltage, continuity, and energy gates in
+    :func:`solve_spm_cuep`.
+    """
+
+    try:
+        from .cuep import find_type1_ueps
+
+        candidates = find_type1_ueps(static, max_group=2, fault_samples=0)
+    except Exception:
+        return []
+    preset = static.preset
+    reference = _project_coi(np.asarray(current, dtype=float), preset.m)
+    out: list[tuple[np.ndarray, str]] = []
+    for item in candidates:
+        delta = _project_coi(np.asarray(item["theta"], dtype=float), preset.m)
+        if np.linalg.norm(delta - reference) < 1e-5:
+            continue
+        out.append((delta, "alternative reduced type-1 UEP candidate"))
+    return out
+
+
 def estimate_spm_fault_energy_peak(static, *, tfault: float = 0.6,
                                    tunit: float = 1e-3, max_points: int = 256) -> float:
     """估计实际 SPM fault-network DAE 轨迹上的最大总能量。"""
@@ -418,7 +446,9 @@ def estimate_spm_fault_energy_peak(static, *, tfault: float = 0.6,
 
 
 def solve_spm_cuep(static, mgp: Optional[SpmMgpResult] = None, *,
-                   root_tol: float = 1e-10, residual_tol: float = 1e-8) -> SpmCuepResult:
+                   root_tol: float = 1e-10, residual_tol: float = 1e-8,
+                   _target_override: tuple[np.ndarray, str] | None = None,
+                   _allow_candidate_fallback: bool = True) -> SpmCuepResult:
     """求解联合 SPM CUEP，并显式返回网络/平衡/分支残差。"""
 
     preset, post, yfull, epu, ngen, nnet = _context(static)
@@ -430,7 +460,10 @@ def solve_spm_cuep(static, mgp: Optional[SpmMgpResult] = None, *,
                              "UNVERIFIED", False, exit_reason="SEP network solve failed",
                              failure_code="SEP_NETWORK_FAILED")
 
-    target, target_reason = _candidate_delta(static, mgp)
+    if _target_override is None:
+        target, target_reason = _candidate_delta(static, mgp)
+    else:
+        target, target_reason = _target_override
     if target is None:
         return SpmCuepResult(np.array([]), np.array([]), np.array([]), float("nan"),
                              float("nan"), float("nan"), float("nan"), float("nan"),
@@ -532,6 +565,17 @@ def solve_spm_cuep(static, mgp: Optional[SpmMgpResult] = None, *,
     # when its caller requests a different ``tfault``.
     peak = estimate_spm_fault_energy_peak(static, tfault=0.5, tunit=1e-3)
     if np.isfinite(peak) and ecritical >= peak:
+        if _allow_candidate_fallback:
+            for alternative, alternative_reason in _alternative_candidate_deltas(static, delta_gen):
+                alternative_result = solve_spm_cuep(
+                    static,
+                    root_tol=root_tol,
+                    residual_tol=residual_tol,
+                    _target_override=(alternative, alternative_reason),
+                    _allow_candidate_fallback=False,
+                )
+                if alternative_result.converged:
+                    return alternative_result
         return SpmCuepResult(delta_gen, theta_net, voltage_net, omega_coi,
                              equilibrium_residual, network_residual, continuity, ecritical,
                              equilibrium_type, False, used_external_ecritical=False,

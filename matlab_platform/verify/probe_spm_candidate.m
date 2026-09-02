@@ -45,6 +45,34 @@ preset.PathEnergyCal = 0;
 [e1,e2,e3,e4,e5] = Fun_Cal_PotentialEnergy_SPM( ...
     preset, postfault, physical_delta, physical_theta, physical_voltage);
 
+% Recompute the same-window fault energy curve used by the source CCT
+% routine, rather than reusing a Python trajectory or a historical scalar.
+Tfault = 0.5;
+Tunit = 1e-4;
+delta0 = prefault.SEP_delta;
+omega0 = prefault.SEP_omegapu * Basevalue.omegab;
+[fault_delta, fault_omega, fault_omegac, fault_theta, fault_voltage, ...
+    ~, ~] = Fun_Cal_Exitpoint_SPM(Tfault, Tunit, fault, postfault, ...
+    preset, delta0, omega0, prefault.net_delta, prefault.net_voltage, Basevalue);
+fault_energy = nan(size(fault_delta, 1), 1);
+for k = 1:size(fault_delta, 1)
+    [q1,q2,q3,q4,q5] = Fun_Cal_PotentialEnergy_SPM( ...
+        preset, postfault, fault_delta(k,:).', fault_theta(k,:).', ...
+        fault_voltage(k,:).');
+    omega_coi = fault_omegac(k,:).';
+    fault_energy(k) = 0.5 * sum(preset.m(:) .* omega_coi.^2) + ...
+        q1 + q2 + q3 + q4 + q5;
+end
+[fault_peak, peak_index] = max(fault_energy);
+cross_index = find(fault_energy >= (e1 + e2 + e3 + e4 + e5), 1, 'first');
+if isempty(cross_index)
+    fault_cct = NaN;
+    fault_cct_found = false;
+else
+    fault_cct = (cross_index - 1) * Tunit;
+    fault_cct_found = true;
+end
+
 report = struct();
 report.schema_version = '1.0';
 report.kind = 'matlab_native_spm_candidate_probe';
@@ -63,6 +91,11 @@ report.cuep_net_voltage = physical_voltage(:).';
 report.energy_components = [e1 e2 e3 e4 e5];
 report.e_critical = sum(report.energy_components);
 report.voltage_positive = all(physical_voltage > 1e-4);
+report.fault_energy_points = numel(fault_energy);
+report.fault_energy_peak = fault_peak;
+report.fault_energy_peak_time = (peak_index - 1) * Tunit;
+report.fault_energy_cct = fault_cct;
+report.fault_energy_cct_found = fault_cct_found;
 
 % Cal_MM_Static_SPM clears its own temporary workspace; recompute the script
 % location instead of relying on the pre-initialization variable.

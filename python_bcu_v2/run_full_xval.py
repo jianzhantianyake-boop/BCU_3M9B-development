@@ -403,6 +403,19 @@ def verify_spm_cct() -> dict:
             f"MATLAB 历史管线 E_critical={float(reference_data['arrays']['e_critical']):.6g}；"
             "该数值仅作历史参考，未作为 Python 自足输入"
         )
+    if not cuep_diagnostics["comparable"]:
+        # The immutable v1 export mixes MATLAB's projected and raw coordinate
+        # frames.  A converged Python result is useful physical evidence, but
+        # cannot be promoted to FULL against that non-comparable reference.
+        if result.converged:
+            limitations.extend([
+                f"本轮 Python 自足候选 E_critical={result.cuep.e_critical:.6g}；",
+                f"本轮故障能量峰值={result.cuep.energy_peak:.6g}；",
+                f"本轮能量 CCT={result.cct:.6g} s；",
+                "待导入同坐标 MATLAB 紧凑参考后再升级 MATLAB_XVAL_FULL",
+            ])
+            return _entry("spm_cct", "MATLAB_XVAL_PARTIAL", ref,
+                          passed=0, total=1, limitations=limitations)
     if not result.converged:
         failure_code = getattr(result, "failure_code", "")
         if not failure_code and getattr(result, "cuep", None) is not None:

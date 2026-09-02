@@ -25,10 +25,10 @@ import run_full_xval
 class SpmXvalGateTests(unittest.TestCase):
     def test_spm_cct_does_not_promote_historical_mixed_frame_energy(self):
         entry = run_full_xval.verify_spm_cct()
-        self.assertEqual(entry["status"], "UNVERIFIED")
-        self.assertTrue(any("failure_code=ENERGY_GATE_EXCEEDED" in item
+        self.assertEqual(entry["status"], "MATLAB_XVAL_PARTIAL")
+        self.assertTrue(any("待导入同坐标 MATLAB 紧凑参考" in item
                             for item in entry["limitations"]))
-        self.assertTrue(any("exceeds fault energy peak" in item
+        self.assertTrue(any("本轮 Python 自足候选 E_critical" in item
                             for item in entry["limitations"]))
         self.assertTrue(all("3.375" not in item or "历史" in item
                             for item in entry["limitations"]))
@@ -53,7 +53,7 @@ class SpmXvalGateTests(unittest.TestCase):
 
     def test_spm_cct_energy_gate_uses_matlab_half_second_window(self):
         entry = run_full_xval.verify_spm_cct()
-        self.assertTrue(any("5.567" in item
+        self.assertTrue(any("本轮故障能量峰值=5.567" in item
                             for item in entry["limitations"]))
 
     def test_matlab_fault_reference_is_flagged_when_network_residual_is_large(self):
