@@ -58,6 +58,11 @@ foreach ($row in $rows) {
 }
 
 $allowedExtensions = @('.md','.py','.m','.ps1','.json','.csv','.yaml','.yml','.toml','.txt','.ps','.gitignore','')
+$allowedTopLevel = @(
+    'README.md', 'SOURCE_MANIFEST.csv', '.gitignore',
+    'docs', 'sources', 'scripts', 'matlab_platform', 'python_bcu',
+    'python_bcu_v2', 'validation', 'experiments'
+)
 # The integrated checkout may be created by the sandbox service account while
 # validation runs as the user's account.  Pass an explicit, narrow safe
 # directory so a dubious-ownership warning cannot silently turn the tracked
@@ -65,6 +70,14 @@ $allowedExtensions = @('.md','.py','.m','.ps1','.json','.csv','.yaml','.yml','.t
 $tracked = @(git -c "safe.directory=$root" -c core.quotePath=false -C $root ls-files)
 foreach ($relative in $tracked) {
     $normalized = $relative -replace '\\', '/'
+    $parts = $normalized.Split('/', 2)
+    if ($parts.Count -eq 1) {
+        if ($allowedTopLevel -notcontains $parts[0]) {
+            Fail "unapproved tracked root file: $relative"
+        }
+    } elseif ($allowedTopLevel -notcontains $parts[0]) {
+        Fail "unapproved tracked top-level directory: $relative"
+    }
     if ($normalized -match '(^|/)(C1_Matpower|results|figures|__pycache__|\.git)(/|$)' -or
         $normalized -match '\.(mat|pyc|png|jpg|jpeg|gif|pdf|zip)$') {
         Fail "forbidden tracked path: $relative"
