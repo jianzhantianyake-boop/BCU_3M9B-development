@@ -404,6 +404,11 @@ def verify_spm_cct() -> dict:
             "该数值仅作历史参考，未作为 Python 自足输入"
         )
     if not result.converged:
+        failure_code = getattr(result, "failure_code", "")
+        if not failure_code and getattr(result, "cuep", None) is not None:
+            failure_code = getattr(result.cuep, "failure_code", "")
+        if failure_code:
+            limitations.insert(0, f"failure_code={failure_code}")
         return _entry("spm_cct", "UNVERIFIED", ref,
                       limitations=[result.exit_reason or "SPM 自足 CUEP 未收敛"] + limitations)
     return _entry("spm_cct", "MATLAB_XVAL_FULL", ref, passed=1, total=1,

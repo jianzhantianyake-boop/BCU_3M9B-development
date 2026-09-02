@@ -50,6 +50,9 @@ class SpmCuepResult:
     exit_reason: str = ""
     energy_peak: float = float("nan")
     coordinate_frame: str = "coi_consistent"
+    # Stable machine-readable terminal classification for reports and batch
+    # studies.  ``exit_reason`` remains the human-readable diagnostic.
+    failure_code: str = ""
 
 
 @dataclass
@@ -424,18 +427,21 @@ def solve_spm_cuep(static, mgp: Optional[SpmMgpResult] = None, *,
     if not sep_ok:
         return SpmCuepResult(np.array([]), np.array([]), np.array([]), float("nan"),
                              float("nan"), sep_residual, float("nan"), float("nan"),
-                             "UNVERIFIED", False, exit_reason="SEP network solve failed")
+                             "UNVERIFIED", False, exit_reason="SEP network solve failed",
+                             failure_code="SEP_NETWORK_FAILED")
 
     target, target_reason = _candidate_delta(static, mgp)
     if target is None:
         return SpmCuepResult(np.array([]), np.array([]), np.array([]), float("nan"),
                              float("nan"), float("nan"), float("nan"), float("nan"),
-                             "UNVERIFIED", False, exit_reason=target_reason)
+                             "UNVERIFIED", False, exit_reason=target_reason,
+                             failure_code="CANDIDATE_NOT_FOUND")
     target = _project_coi(target, preset.m)
     if np.linalg.norm(target - sep) < 1e-6:
         return SpmCuepResult(np.array([]), np.array([]), np.array([]), float("nan"),
                              float("nan"), float("nan"), float("nan"), float("nan"),
-                             "SEP", False, exit_reason="candidate collapsed to SEP")
+                             "SEP", False, exit_reason="candidate collapsed to SEP",
+                             failure_code="CANDIDATE_COLLAPSED_TO_SEP")
 
     # 网络分支连续追踪：从 SEP 到候选角度逐点 warm-start。
     states = [sep_net.copy()]
@@ -451,7 +457,8 @@ def solve_spm_cuep(static, mgp: Optional[SpmMgpResult] = None, *,
             return SpmCuepResult(np.array([]), np.array([]), np.array([]), float("nan"),
                                  float("nan"), residual, float("nan"), float("nan"),
                                  "UNVERIFIED", False,
-                                 exit_reason=f"network branch continuation failed ({target_reason})")
+                                 exit_reason=f"network branch continuation failed ({target_reason})",
+                                 failure_code="NETWORK_BRANCH_CONTINUATION_FAILED")
         states.append(previous.copy())
 
     end_net = states[-1]
@@ -499,12 +506,14 @@ def solve_spm_cuep(static, mgp: Optional[SpmMgpResult] = None, *,
                              equilibrium_residual, network_residual, continuity, float("nan"),
                              "UNVERIFIED", False,
                              exit_reason=(f"network branch step {continuity:.6g} exceeds "
-                                          f"registered tolerance {SPM_BRANCH_CONTINUITY_TOL:g}"))
+                                          f"registered tolerance {SPM_BRANCH_CONTINUITY_TOL:g}"),
+                             failure_code="NETWORK_BRANCH_DISCONTINUOUS")
     if (not joint.success) or network_residual >= residual_tol or equilibrium_residual >= residual_tol:
         return SpmCuepResult(delta_gen, theta_net, voltage_net, omega_coi,
                              equilibrium_residual, network_residual, continuity, float("nan"),
                              "UNVERIFIED", False,
-                             exit_reason="joint equilibrium residual exceeds tolerance")
+                             exit_reason="joint equilibrium residual exceeds tolerance",
+                             failure_code="JOINT_RESIDUAL_EXCEEDED")
 
     # 以 reduced Jacobian 的正特征值数作 type-1 诊断；网络分支残差仍单独登记。
     try:
@@ -527,14 +536,14 @@ def solve_spm_cuep(static, mgp: Optional[SpmMgpResult] = None, *,
                              equilibrium_residual, network_residual, continuity, ecritical,
                              equilibrium_type, False, used_external_ecritical=False,
                              exit_reason=f"E_critical={ecritical:.6g} exceeds fault energy peak={peak:.6g}",
-                             energy_peak=peak)
+                             energy_peak=peak, failure_code="ENERGY_GATE_EXCEEDED")
     return SpmCuepResult(delta_gen, theta_net, voltage_net, omega_coi,
                          equilibrium_residual, network_residual, continuity, ecritical,
                          equilibrium_type, bool(equilibrium_type.startswith("type-1") and
                                                 ecritical > 0.0),
                          used_external_ecritical=False,
                          exit_reason="joint SPM equilibrium converged",
-                         energy_peak=peak)
+                         energy_peak=peak, failure_code="CONVERGED")
 
 
 def spm_self_contained_cct(static, *, tfault: float = 0.6,

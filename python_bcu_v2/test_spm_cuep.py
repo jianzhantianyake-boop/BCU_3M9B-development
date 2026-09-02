@@ -59,6 +59,32 @@ class SpmCuepTests(unittest.TestCase):
             self.assertTrue(np.isfinite(result.e_critical))
             self.assertLess(result.network_residual, 1e-8)
 
+    def test_energy_gate_failure_has_machine_readable_code(self):
+        """物理能量门禁失败必须可供批量报告机读。"""
+        yfull = np.asarray(self.static.postfault.metadata["yfull_mod"])
+        delta = np.array([-0.7585584172568889, 1.8575840695226964,
+                          1.9978354475151372])
+        z, converged, residual = solve_spm_network(
+            delta, yfull, self.static.preset.epu, tol=1e-12,
+        )
+        self.assertTrue(converged, msg=f"network residual={residual:g}")
+        mgp = SpmMgpResult(
+            delta_gen=delta,
+            theta_net=z[:6],
+            voltage_net=z[6:],
+            gradient_norm=0.0,
+            trajectory_count=1,
+            exit_reason="test physical candidate",
+            converged=True,
+            network_residual=float(residual),
+            branch_continuity_error=0.0,
+        )
+        result = solve_spm_cuep(self.static, mgp)
+        self.assertFalse(result.converged)
+        self.assertEqual(result.failure_code, "ENERGY_GATE_EXCEEDED")
+        self.assertTrue(np.isfinite(result.energy_peak))
+        self.assertGreaterEqual(result.e_critical, result.energy_peak)
+
     def test_self_contained_result_supports_tuple_unpacking(self):
         result = spm_self_contained_cct(
             self.static, tfault=0.05, tunit=0.005, max_segments=1,
