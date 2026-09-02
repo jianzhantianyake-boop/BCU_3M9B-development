@@ -3,10 +3,14 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$PythonExe,
     [int]$TimeoutMinutes = 30,
-    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot)
+    [string]$RepoRoot
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $RepoRoot) {
+    $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $RepoRoot = Split-Path -Parent $RepoRoot
+}
 if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { throw "Python executable does not exist: $PythonExe" }
 $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmssZ')
 $reportDir = Join-Path $RepoRoot "validation/reports/$stamp"

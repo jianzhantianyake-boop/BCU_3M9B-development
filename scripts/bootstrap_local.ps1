@@ -2,10 +2,14 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$MatpowerRoot,
-    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot)
+    [string]$RepoRoot
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $RepoRoot) {
+    $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $RepoRoot = Split-Path -Parent $RepoRoot
+}
 if (-not (Test-Path -LiteralPath $MatpowerRoot -PathType Container)) {
     throw "MATPOWER source path does not exist: $MatpowerRoot"
 }

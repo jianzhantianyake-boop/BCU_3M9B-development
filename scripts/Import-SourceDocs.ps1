@@ -3,13 +3,17 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$SourceRoot,
 
-    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$RepoRoot,
 
     [string]$SnapshotDate = (Get-Date -Format 'yyyy-MM-dd')
 )
 
 $ErrorActionPreference = 'Stop'
 $OutputEncoding = [System.Text.UTF8Encoding]::new()
+if (-not $RepoRoot) {
+    $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $RepoRoot = Split-Path -Parent $RepoRoot
+}
 
 if (-not (Test-Path -LiteralPath $SourceRoot -PathType Container)) {
     throw "SourceRoot does not exist: $SourceRoot"

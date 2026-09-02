@@ -1,10 +1,14 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$RepoRoot,
     [int]$ExpectedSourceFiles = 143
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $RepoRoot) {
+    $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $RepoRoot = Split-Path -Parent $RepoRoot
+}
 $failures = [System.Collections.Generic.List[string]]::new()
 $root = (Resolve-Path -LiteralPath $RepoRoot).Path
 function Fail([string]$Message) { $failures.Add($Message) }
