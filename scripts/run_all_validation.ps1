@@ -26,6 +26,7 @@ $tasks = @(
     @{ Path = 'python_bcu_v2/test_config.py'; Arg = 'test_config.py'; Cwd = 'python_bcu_v2' },
     @{ Path = 'python_bcu_v2/test_cuep.py'; Arg = 'test_cuep.py'; Cwd = 'python_bcu_v2' },
     @{ Path = 'python_bcu_v2/test_spm_joint_audit.py'; Arg = 'test_spm_joint_audit.py'; Cwd = 'python_bcu_v2' },
+    @{ Path = 'python_bcu_v2/test_spm_homotopy.py'; Arg = 'test_spm_homotopy.py'; Cwd = 'python_bcu_v2' },
     @{ Path = 'python_bcu_v2/run_full_xval.py'; Arg = 'run_full_xval.py'; Cwd = 'python_bcu_v2' },
     @{ Path = 'python_bcu_v2/test_mutations.py'; Arg = 'test_mutations.py'; Cwd = 'python_bcu_v2' },
     @{ Path = 'python_bcu_v2/test_spm_xval_gate.py'; Arg = 'test_spm_xval_gate.py'; Cwd = 'python_bcu_v2' },
