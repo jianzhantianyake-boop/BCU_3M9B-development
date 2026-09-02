@@ -88,6 +88,33 @@ class SpmJointAuditTests(unittest.TestCase):
         self.assertEqual(len(states), 1)
         self.assertEqual(states[0]["delta_gen"], [10, 11, 12])
 
+    def test_audit_deduplicates_two_pi_equilibrium_images(self):
+        first = {
+            "delta_gen": [-0.7585584172568889, 1.8575840695226964, 1.9978354475151372],
+            "theta_net": [
+                -0.7126093610476225, -0.3030526483798677,
+                -0.7780140476285538, 1.5615857062985627,
+                1.6256814059614753, 1.7637103117045405,
+            ],
+            "voltage_net": [0.6115351306051858, 0.2912895920212790,
+                             0.5929088068644735, 0.5805594920242412,
+                             0.6514770252835123, 0.7739313040016673],
+        }
+        image = {
+            "delta_gen": [1.0325434376988165, -2.634499382702955, -2.494248004720695],
+            "theta_net": [
+                1.0784924938903462, 1.488049206538894,
+                1.0130878072957974, -2.930497745939174,
+                -2.866402046286584, -2.728373140537599,
+            ],
+            "voltage_net": first["voltage_net"],
+        }
+        report = audit_spm_joint_roots(
+            self.static, max_starts=2, seed_states=[first, image], random_seed=20260902,
+        )
+        self.assertEqual(report["converged_start_count"], 2)
+        self.assertEqual(report["unique_converged_root_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

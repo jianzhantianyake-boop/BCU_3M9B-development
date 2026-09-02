@@ -47,6 +47,38 @@ def _unwrap_to_reference(delta: np.ndarray, reference: np.ndarray,
     return unwrapped, [int(item) for item in wraps]
 
 
+def _periodic_state_distance(left: Mapping, right: Mapping) -> float:
+    """Distance between two roots after removing common angle/2π images.
+
+    Generator and network angles are compared relative to generator 1 and
+    wrapped to ``[-π, π)``.  Voltage amplitudes are not periodic and therefore
+    remain in the distance.  This prevents a different representation of the
+    same equilibrium image from being counted as a second physical root while
+    still distinguishing a different network voltage branch.
+    """
+
+    def wrapped(values):
+        values = np.asarray(values, dtype=float)
+        return (values + np.pi) % (2.0 * np.pi) - np.pi
+
+    left_delta = np.asarray(left["delta_gen"], dtype=float)
+    right_delta = np.asarray(right["delta_gen"], dtype=float)
+    left_theta = np.asarray(left["theta_net"], dtype=float)
+    right_theta = np.asarray(right["theta_net"], dtype=float)
+    left_voltage = np.asarray(left["voltage_net"], dtype=float)
+    right_voltage = np.asarray(right["voltage_net"], dtype=float)
+    delta_distance = wrapped((left_delta[1:] - left_delta[0])
+                              - (right_delta[1:] - right_delta[0]))
+    theta_distance = wrapped((left_theta - left_delta[0])
+                              - (right_theta - right_delta[0]))
+    voltage_distance = left_voltage - right_voltage
+    return float(max(
+        np.max(np.abs(delta_distance), initial=0.0),
+        np.max(np.abs(theta_distance), initial=0.0),
+        np.max(np.abs(voltage_distance), initial=0.0),
+    ))
+
+
 def _network_branch_to(static, delta: np.ndarray, sep_delta: np.ndarray,
                        sep_state: np.ndarray, *, segments: int = 64) -> tuple[np.ndarray, float, bool]:
     """从 SEP 网络状态连续追踪到目标角，返回末态、最大步长和成功标志。"""
@@ -236,7 +268,7 @@ def audit_spm_joint_roots(static, *, max_starts: int = 152,
             }
             records.append(record)
             if converged and not any(
-                np.max(np.abs(np.asarray(record["delta_gen"]) - np.asarray(item["delta_gen"]))) < 1e-6
+                _periodic_state_distance(record, item) < 1e-6
                 for item in unique
             ):
                 unique.append(record)
