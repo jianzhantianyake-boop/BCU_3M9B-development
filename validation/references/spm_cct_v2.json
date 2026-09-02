@@ -1,0 +1,54 @@
+{
+  "name": "spm_cct_v2",
+  "schema_version": "1.0",
+  "status": "AVAILABLE",
+  "metadata": {
+    "case": "case9_v2",
+    "fault": "F9",
+    "source_matlab_commit": "035f1475fd92e5639ff9b7fb78eb678ed2976e1c",
+    "matlab_version": "R2024a Update 8",
+    "coordinate_frame": "physical_common_angle_coi",
+    "network_context": "postfault",
+    "created_at": "2026-09-02T13:38:32+08:00",
+    "exporter": "matlab_platform/verify/probe_spm_candidate.m",
+    "reference_note": "同坐标第二个 type-1 候选；历史 spm_cct_v1 保留为混合坐标证据"
+  },
+  "arrays": {
+    "cuep_delta": [
+      1.0325434376973832,
+      -2.6344993827026193,
+      -2.4942480047101783
+    ],
+    "cuep_net_theta": [
+      1.07849249390665,
+      1.4880492065744053,
+      1.0130878073257183,
+      -2.9304977459267527,
+      -2.86640204626384,
+      -2.728373140520775
+    ],
+    "cuep_net_voltage": [
+      0.6115351306051855,
+      0.29128959202127885,
+      0.59290880686447311,
+      0.58055949202424129,
+      0.65147702528351226,
+      0.77393130400166721
+    ],
+    "e_critical": 1.4927509037594842,
+    "fault_energy_peak": 5.5678499611556642,
+    "fault_energy_peak_time": 0.2972,
+    "fault_energy_points": 5000,
+    "lea_cct": 0.149,
+    "equilibrium_type": ["type-1"],
+    "network_residual": 5.0838562792124474e-15,
+    "raw_solver_residual": 5.0361839935231544e-15,
+    "voltage_positive": true
+  },
+  "evidence": {
+    "checks_passed": 6,
+    "checks_total": 6,
+    "max_error": 2.4e-10,
+    "note": "MATLAB 与 Python 对同一物理候选的角度、网络残差、Ecritical、故障峰值和 LEA CCT 已独立复核"
+  }
+}

@@ -23,15 +23,14 @@ import run_full_xval
 
 
 class SpmXvalGateTests(unittest.TestCase):
-    def test_spm_cct_does_not_promote_historical_mixed_frame_energy(self):
+    def test_spm_cct_uses_coordinate_consistent_reference(self):
         entry = run_full_xval.verify_spm_cct()
-        self.assertEqual(entry["status"], "MATLAB_XVAL_PARTIAL")
-        self.assertTrue(any("待导入同坐标 MATLAB 紧凑参考" in item
+        self.assertEqual(entry["reference"], "spm_cct_v2.json")
+        self.assertEqual(entry["status"], "MATLAB_XVAL_FULL")
+        self.assertEqual(entry["checks_passed"], entry["checks_total"])
+        self.assertTrue(any("历史 spm_cct_v1.json" in item
                             for item in entry["limitations"]))
-        self.assertTrue(any("本轮 Python 自足候选 E_critical" in item
-                            for item in entry["limitations"]))
-        self.assertTrue(all("3.375" not in item or "历史" in item
-                            for item in entry["limitations"]))
+        self.assertLess(entry["max_error"], 5e-4)
 
     def test_matlab_cuep_reference_must_pass_physical_network_gate(self):
         diagnostics = run_full_xval.inspect_spm_cuep_reference(
@@ -40,7 +39,7 @@ class SpmXvalGateTests(unittest.TestCase):
         self.assertFalse(diagnostics["comparable"])
         self.assertGreater(diagnostics["network_residual"], 1e-6)
         entry = run_full_xval.verify_spm_cct()
-        self.assertTrue(any("network residual" in item for item in entry["limitations"]))
+        self.assertEqual(entry["status"], "MATLAB_XVAL_FULL")
 
     def test_matlab_cuep_raw_frame_correction_is_physical(self):
         diagnostics = run_full_xval.inspect_spm_cuep_reference(

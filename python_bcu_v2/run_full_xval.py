@@ -366,7 +366,10 @@ def _matlab_path(name: str, ref: str, historical: str) -> dict:
 
 
 def verify_spm_cct() -> dict:
-    ref = "spm_cct_v1.json"
+    # v1 is retained as historical evidence because its projected network
+    # angles mix coordinate frames.  v2 is the immutable same-frame export
+    # produced by the native MATLAB candidate probe.
+    ref = "spm_cct_v2.json"
     ref_status, limitations = _reference_status(ref)
     if ref_status != "AVAILABLE":
         return _entry("spm_cct", "MATLAB_XVAL_PARTIAL" if ref_status == "BLOCKED" else ref_status,
@@ -376,9 +379,9 @@ def verify_spm_cct() -> dict:
         from bcu_v2 import config as C
         from bcu_v2.spm_cuep import spm_self_contained_cct
         static = C.build_static_from_config(C.apply_overrides(C.load_config(), {"mode": "spm_cct"}))
-        # Keep the report command bounded while the full MATLAB-sized MGP
-        # search is still under development. A capped run can only leave the
-        # path UNVERIFIED; it is never promoted on a partial trajectory.
+        # The MGP search is bounded for the report command.  The selected
+        # candidate itself is then checked against the compact native export;
+        # a bounded MGP search cannot silently promote a non-converged result.
         result = spm_self_contained_cct(static, max_segments=1)
     except Exception as exc:  # noqa: BLE001
         return _entry("spm_cct", "FAILED", ref, limitations=[f"自足求解异常: {exc}"])
@@ -400,22 +403,12 @@ def verify_spm_cct() -> dict:
         )
     if np.isfinite(reference_data.get("arrays", {}).get("e_critical", np.nan)):
         limitations.append(
-            f"MATLAB 历史管线 E_critical={float(reference_data['arrays']['e_critical']):.6g}；"
-            "该数值仅作历史参考，未作为 Python 自足输入"
+            f"MATLAB 紧凑参考 E_critical={float(reference_data['arrays']['e_critical']):.6g}；"
+            "该数值仅用于独立比较，未作为 Python 自足输入"
         )
     if not cuep_diagnostics["comparable"]:
-        # The immutable v1 export mixes MATLAB's projected and raw coordinate
-        # frames.  A converged Python result is useful physical evidence, but
-        # cannot be promoted to FULL against that non-comparable reference.
-        if result.converged:
-            limitations.extend([
-                f"本轮 Python 自足候选 E_critical={result.cuep.e_critical:.6g}；",
-                f"本轮故障能量峰值={result.cuep.energy_peak:.6g}；",
-                f"本轮能量 CCT={result.cct:.6g} s；",
-                "待导入同坐标 MATLAB 紧凑参考后再升级 MATLAB_XVAL_FULL",
-            ])
-            return _entry("spm_cct", "MATLAB_XVAL_PARTIAL", ref,
-                          passed=0, total=1, limitations=limitations)
+        return _entry("spm_cct", "NOT_COMPARABLE", ref,
+                      limitations=limitations + [cuep_diagnostics["reason"]])
     if not result.converged:
         failure_code = getattr(result, "failure_code", "")
         if not failure_code and getattr(result, "cuep", None) is not None:
@@ -424,8 +417,55 @@ def verify_spm_cct() -> dict:
             limitations.insert(0, f"failure_code={failure_code}")
         return _entry("spm_cct", "UNVERIFIED", ref,
                       limitations=[result.exit_reason or "SPM 自足 CUEP 未收敛"] + limitations)
-    return _entry("spm_cct", "MATLAB_XVAL_FULL", ref, passed=1, total=1,
-                  limitations=["需在 MATLAB 可用后复核固定参考数值"] + limitations)
+    arrays = reference_data.get("arrays", {})
+    from bcu_v2.reference_io import as_numpy
+    try:
+        ref_delta = as_numpy(arrays["cuep_delta"]).astype(float).reshape(-1)
+        ref_theta = as_numpy(arrays["cuep_net_theta"]).astype(float).reshape(-1)
+        ref_voltage = as_numpy(arrays["cuep_net_voltage"]).astype(float).reshape(-1)
+        py_delta = np.asarray(result.cuep.delta_gen, dtype=float).reshape(-1)
+        py_theta = np.asarray(result.cuep.theta_net, dtype=float).reshape(-1)
+        py_voltage = np.asarray(result.cuep.voltage_net, dtype=float).reshape(-1)
+        values = {
+            "delta_gen": float(np.max(np.abs(py_delta - ref_delta))),
+            "theta_net": float(np.max(np.abs(py_theta - ref_theta))),
+            "voltage_net": float(np.max(np.abs(py_voltage - ref_voltage))),
+            "e_critical": abs(float(result.cuep.e_critical) - float(arrays["e_critical"])),
+            # The solver's diagnostic peak uses a 1e-3 sampling window while
+            # the native export uses 1e-4; permit their registered sub-ms
+            # discretization difference, but do not omit the check.
+            "fault_energy_peak": abs(float(result.cuep.energy_peak) - float(arrays["fault_energy_peak"])),
+            "lea_cct": abs(float(result.cct) - float(arrays["lea_cct"])),
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        return _entry("spm_cct", "FAILED", ref,
+                      limitations=limitations + [f"SPM CCT reference fields invalid: {exc}"])
+    ref_type = arrays.get("equilibrium_type", ["type-1"])
+    if isinstance(ref_type, (list, tuple)):
+        ref_type = ref_type[0] if ref_type else ""
+    checks = [
+        values["delta_gen"] < 1e-6,
+        values["theta_net"] < 1e-6,
+        values["voltage_net"] < 1e-6,
+        values["e_critical"] < 1e-6,
+        values["fault_energy_peak"] < 5e-4,
+        values["lea_cct"] <= 1e-4,
+        float(result.cuep.network_residual) < 1e-8,
+        float(result.cuep.equilibrium_residual) < 1e-8,
+        bool(result.cuep.converged) and not bool(result.used_external_ecritical),
+        str(result.cuep.equilibrium_type) == str(ref_type),
+    ]
+    passed = int(sum(checks))
+    total = len(checks)
+    limitations.extend([
+        f"本轮 Python 自足 E_critical={result.cuep.e_critical:.10g}，MATLAB 参考={float(arrays['e_critical']):.10g}",
+        f"本轮故障能量峰值={result.cuep.energy_peak:.10g}，MATLAB 参考={float(arrays['fault_energy_peak']):.10g}",
+        f"本轮 LEA CCT={result.cct:.10g} s，MATLAB 参考={float(arrays['lea_cct']):.10g}",
+        "历史 spm_cct_v1.json 仅作混合坐标审计，不参与本次 FULL 比较",
+    ])
+    status = "MATLAB_XVAL_FULL" if passed == total else "UNVERIFIED"
+    return _entry("spm_cct", status, ref, passed=passed, total=total,
+                  error=max(values.values()), limitations=limitations)
 
 
 def verify_spm_numerical() -> dict:
