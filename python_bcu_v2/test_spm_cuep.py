@@ -107,6 +107,28 @@ class SpmCuepTests(unittest.TestCase):
         self.assertLess(residual, 1e-10)
         self.assertTrue(np.all(z[6:] > 1e-4))
 
+    def test_constant_impedance_network_has_unique_complex_physical_solution(self):
+        """恒阻抗 SPM 网络的正电压解应等于唯一复数线性节点解。"""
+        yfull = np.asarray(self.static.postfault.metadata["yfull_mod"])
+        ngen = self.static.preset.ngen
+        nnet = yfull.shape[0] - ngen
+        y_nn = yfull[ngen:, ngen:]
+        y_ng = yfull[ngen:, :ngen]
+        rng = np.random.default_rng(20260902)
+        for _ in range(8):
+            delta = rng.uniform(-np.pi, np.pi, ngen)
+            expected = -np.linalg.solve(
+                y_nn, y_ng @ (self.static.preset.epu * np.exp(1j * delta))
+            )
+            state, converged, residual = solve_spm_network(
+                delta, yfull, self.static.preset.epu, tol=1e-12,
+            )
+            self.assertTrue(converged, msg=f"network residual={residual:g}")
+            self.assertLess(residual, 1e-10)
+            actual = state[nnet:] * np.exp(1j * state[:nnet])
+            np.testing.assert_allclose(actual, expected, rtol=1e-9, atol=1e-10)
+            self.assertTrue(np.all(state[nnet:] > 1e-4))
+
     def test_fault_energy_peak_uses_spm_dae_trajectory(self):
         """SPM energy must not silently fall back to the reduced trajectory."""
         with patch("bcu_3m9b.dynamics.integrate_reduced",
