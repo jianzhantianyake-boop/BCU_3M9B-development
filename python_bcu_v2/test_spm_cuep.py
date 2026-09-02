@@ -83,6 +83,18 @@ class SpmCuepTests(unittest.TestCase):
         self.assertFalse(converged)
         self.assertLess(residual, 1e-8)
 
+    def test_cold_start_uses_physical_network_branch_for_zero_constant_power(self):
+        """无显式初值时不能把零电压数学根当作唯一求解结果。"""
+        yfull = np.asarray(self.static.postfault.metadata["yfull_mod"])
+        delta = np.array([-0.7585584172568889, 1.8575840695226964,
+                          1.9978354475151372])
+        state, converged, residual = solve_spm_network(
+            delta, yfull, self.static.preset.epu,
+        )
+        self.assertTrue(converged, msg=f"cold-start residual={residual:g}")
+        self.assertLess(residual, 1e-10)
+        self.assertTrue(np.all(state[yfull.shape[0] - self.static.preset.ngen:] > 1e-4))
+
     def test_matlab_newton_network_corrector_returns_physical_sep(self):
         yfull = np.asarray(self.static.postfault.metadata["yfull_mod"])
         z, converged, residual = solve_spm_network_newton(

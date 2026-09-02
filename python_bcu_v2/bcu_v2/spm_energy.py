@@ -87,6 +87,7 @@ def solve_spm_network(delta_gen: np.ndarray, yfull: np.ndarray, epu: np.ndarray,
 
     ngen = int(delta_gen.size)
     nnet = int(yfull.shape[0]) - ngen
+    cold_start = guess is None
     if guess is None:
         guess = np.r_[np.zeros(nnet), np.ones(nnet)]
     sol = root(lambda x: spm_network_residual(x, delta_gen, yfull, epu, sload_pq),
@@ -99,7 +100,37 @@ def solve_spm_network(delta_gen: np.ndarray, yfull: np.ndarray, epu: np.ndarray,
     voltages = np.asarray(sol.x[nnet:], dtype=float)
     physical_voltage = bool(np.all(np.isfinite(voltages)) and
                             np.all(voltages > float(voltage_min)))
-    return sol.x, bool(sol.success and r < 1e-6 and physical_voltage), r
+    if sol.success and r < 1e-6 and physical_voltage:
+        return sol.x, True, r
+
+    # With the SPM's registered constant-impedance load, ``sload_pq`` is
+    # absent and every algebraic bus has P=Q=0.  For a nonzero bus voltage this
+    # is exactly I_net=0, so the physical network state can be recovered from
+    # the linear complex nodal equation Y_nn V_net + Y_ng V_gen = 0.  SciPy's
+    # cold ``hybr`` start occasionally prefers the equally valid zero-voltage
+    # root; use the linear physical solution only for a genuinely cold start,
+    # while an explicitly supplied bad/zero guess remains a diagnostic failure
+    # rather than being silently replaced.
+    if cold_start and sload_pq is None:
+        try:
+            v_gen = np.asarray(epu, dtype=float) * np.exp(1j * delta_gen)
+            y_nn = np.asarray(yfull[ngen:, ngen:], dtype=complex)
+            y_ng = np.asarray(yfull[ngen:, :ngen], dtype=complex)
+            v_net = -np.linalg.solve(y_nn, y_ng @ v_gen)
+            candidate = np.r_[np.angle(v_net), np.abs(v_net)]
+            candidate_residual = float(np.linalg.norm(
+                spm_network_residual(candidate, delta_gen, yfull, epu, sload_pq)
+            ))
+            candidate_voltage = np.asarray(candidate[nnet:], dtype=float)
+            candidate_physical = bool(np.all(np.isfinite(candidate_voltage)) and
+                                      np.all(candidate_voltage > float(voltage_min)))
+            if candidate_physical and candidate_residual < 1e-6:
+                return candidate, True, candidate_residual
+        except (np.linalg.LinAlgError, ValueError, FloatingPointError):
+            # Keep the original solver diagnostics below; callers still get a
+            # structured failure instead of an invented state.
+            pass
+    return sol.x, False, r
 
 
 def solve_spm_network_newton(delta_gen: np.ndarray, yfull: np.ndarray,
