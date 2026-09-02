@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$PythonExe,
@@ -21,7 +21,10 @@ $tasks = @(
     @{ Path = 'python_bcu_v2/test_p2.py'; Arg = 'test_p2.py'; Cwd = 'python_bcu_v2' },
     @{ Path = 'python_bcu_v2/test_config.py'; Arg = 'test_config.py'; Cwd = 'python_bcu_v2' },
     @{ Path = 'python_bcu_v2/test_cuep.py'; Arg = 'test_cuep.py'; Cwd = 'python_bcu_v2' },
-    @{ Path = 'python_bcu_v2/run_full_xval.py'; Arg = 'run_full_xval.py'; Cwd = 'python_bcu_v2' }
+    @{ Path = 'python_bcu_v2/run_full_xval.py'; Arg = 'run_full_xval.py'; Cwd = 'python_bcu_v2' },
+    @{ Path = 'python_bcu_v2/test_mutations.py'; Arg = 'test_mutations.py'; Cwd = 'python_bcu_v2' },
+    @{ Path = 'python_bcu_v2/test_spm_xval_gate.py'; Arg = 'test_spm_xval_gate.py'; Cwd = 'python_bcu_v2' },
+    @{ Path = 'experiments/test_damping_study.py'; Arg = 'test_damping_study.py'; Cwd = 'experiments' }
 )
 $records = [System.Collections.Generic.List[object]]::new()
 foreach ($task in $tasks) {
