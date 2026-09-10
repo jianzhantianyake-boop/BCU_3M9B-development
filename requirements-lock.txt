@@ -1,6 +1,6 @@
 # BCU_3M9B-development Python v2 runtime baseline
-# Recorded from C:\Users\WangS\AppData\Local\Programs\Python\Python312\python.exe
-# on 2026-09-10.  The project .venv is created with --system-site-packages,
+# Recorded from the audited Python 3.12 runtime on 2026-09-10.  The project
+# .venv is created with --system-site-packages,
 # so these pins document the expected versions without downloading packages.
 numpy==2.2.4
 scipy==1.17.1
