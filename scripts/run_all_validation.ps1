@@ -1,6 +1,5 @@
 ﻿[CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
     [string]$PythonExe,
     [int]$TimeoutMinutes = 30,
     [string]$RepoRoot
@@ -11,7 +10,22 @@ if (-not $RepoRoot) {
     $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
     $RepoRoot = Split-Path -Parent $RepoRoot
 }
-if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { throw "Python executable does not exist: $PythonExe" }
+if (-not $PythonExe) {
+    $projectVenv = Join-Path $RepoRoot '.venv\Scripts\python.exe'
+    if (Test-Path -LiteralPath $projectVenv -PathType Leaf) {
+        $PythonExe = $projectVenv
+    } elseif ($env:BCU_PYTHON_EXE -and
+              (Test-Path -LiteralPath $env:BCU_PYTHON_EXE -PathType Leaf)) {
+        $PythonExe = $env:BCU_PYTHON_EXE
+    } else {
+        $candidate = Get-Command python -ErrorAction SilentlyContinue
+        if ($candidate) { $PythonExe = $candidate.Source }
+    }
+}
+if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
+    throw '找不到 Python。请先创建 .venv，或用 -PythonExe 指定 Python 3.12 的绝对路径。'
+}
+$PythonExe = (Resolve-Path -LiteralPath $PythonExe).Path
 $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmssZ')
 $reportDir = Join-Path $RepoRoot "validation/reports/$stamp"
 New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
@@ -54,6 +68,8 @@ foreach ($task in $tasks) {
         $psi.CreateNoWindow = $true
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
+        $psi.EnvironmentVariables['PYTHONUTF8'] = '1'
+        $psi.EnvironmentVariables['MPLBACKEND'] = 'Agg'
         $proc = [System.Diagnostics.Process]::new()
         $proc.StartInfo = $psi
         try {

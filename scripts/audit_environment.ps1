@@ -39,8 +39,16 @@ try {
 } catch { }
 
 if (-not $PythonExe) {
-    $candidate = Get-Command python -ErrorAction SilentlyContinue
-    if ($candidate) { $PythonExe = $candidate.Source }
+    $projectVenv = Join-Path $report.repo_root '.venv\Scripts\python.exe'
+    if (Test-Path -LiteralPath $projectVenv -PathType Leaf) {
+        $PythonExe = $projectVenv
+    } elseif ($env:BCU_PYTHON_EXE -and
+              (Test-Path -LiteralPath $env:BCU_PYTHON_EXE -PathType Leaf)) {
+        $PythonExe = $env:BCU_PYTHON_EXE
+    } else {
+        $candidate = Get-Command python -ErrorAction SilentlyContinue
+        if ($candidate) { $PythonExe = $candidate.Source }
+    }
 }
 if ($PythonExe -and (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
     $report.python.executable = (Resolve-Path -LiteralPath $PythonExe).Path
