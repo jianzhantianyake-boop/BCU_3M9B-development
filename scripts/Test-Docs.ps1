@@ -19,7 +19,8 @@ $required = @(
     'docs/04_操作与回归指南.md', 'docs/05_开发路线图.md', 'docs/06_实验与结果规范.md',
     'docs/修改日志.md', 'docs/provenance/2026-09-01_接手来源清单.md',
     'scripts/Import-SourceDocs.ps1', 'scripts/audit_environment.ps1',
-    'scripts/bootstrap_local.ps1', 'scripts/run_all_validation.ps1'
+    'scripts/bootstrap_local.ps1', 'scripts/run_all_validation.ps1',
+    'scripts/run_python_v2.ps1', 'requirements-lock.txt'
 )
 foreach ($relative in $required) {
     if (-not (Test-Path -LiteralPath (Join-Path $root $relative) -PathType Leaf)) { Fail "missing required file: $relative" }
@@ -59,7 +60,7 @@ foreach ($row in $rows) {
 
 $allowedExtensions = @('.md','.py','.m','.ps1','.json','.csv','.yaml','.yml','.toml','.txt','.ps','.gitignore','')
 $allowedTopLevel = @(
-    'README.md', 'SOURCE_MANIFEST.csv', '.gitignore',
+    'README.md', 'SOURCE_MANIFEST.csv', 'requirements-lock.txt', '.gitignore',
     'docs', 'sources', 'scripts', 'matlab_platform', 'python_bcu',
     'python_bcu_v2', 'validation', 'experiments'
 )
